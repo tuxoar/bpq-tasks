@@ -404,6 +404,7 @@ hiding it. Each row gets a status:
 | `ADDED` | No address in the traffic; recovered from QRZ. |
 | `MSG ONLY` | Address in the traffic; QRZ has none published. |
 | `NONE` | No address in the traffic, and none found for the callsign. |
+| `NO CALLSIGN` | No address in the traffic and no callsign in the address block — there is nothing to look up. |
 
 In the `FROM QRZ` column, `-` means QRZ was queried and had no published
 address, `no callsign` means the address block had no callsign to look up,
@@ -571,7 +572,7 @@ case, and QRZ is usually, though not always, the better source.
 
 ## Technical notes
 
-The script speaks telnet over a raw socket on purpose: Python's stdlib
+`bpq_admin.py` speaks telnet over a raw socket on purpose: Python's stdlib
 `telnetlib` was removed in 3.13, and BPQ's telnet server only needs IAC
 option requests refused. On entering the BBS it captures the node's exact
 prompt line (e.g. `de N0CALL>`) and only stops reading on that string, so
@@ -579,3 +580,13 @@ message bodies containing `>` — routine in NTS traffic — can't truncate a
 read. The `BpqSession` class in `bpq_admin.py` (login / enter_bbs /
 bbs_command / logout) is the extension point if you want to script other
 BBS commands.
+
+## Roadmap
+
+The next planned feature is a `notify-stale` action for unattended
+monitoring: a scheduled run (e.g. every six hours) that reports stale
+traffic to Discord, Telegram, and/or email, so nothing sits unnoticed
+between manual delivery passes. The full design — channel setup guides,
+environment variables, scheduling examples, and the implementation
+checklist — is in
+[docs/stale-notifier-spec.md](docs/stale-notifier-spec.md).
