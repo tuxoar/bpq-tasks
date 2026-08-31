@@ -250,7 +250,7 @@ python bpq_admin.py export-stale mynode.example.com --user N0CALL \
 
 | Argument | Default | Description |
 |---|---|---|
-| `--days N` | `30` | A message is stale when it is `N` or more days old. |
+| `--days N` | `3` | A message is stale when it is `N` or more days old. |
 | `--out DIR` | `.` | Parent directory in which the per-run folder is created. |
 
 Each run creates a folder named `stale-YYYYMMDD-HHMMSS` (Windows-safe, no
@@ -317,8 +317,9 @@ python bpq_admin.py notify-stale mynode.example.com --user N0CALL --days 30
 
 | Argument | Default | Description |
 |---|---|---|
-| `--days N` | `30` | Same staleness cutoff as `export-stale`. |
-| `--heartbeat` | off | Send a notice even when nothing is stale, so a silent notifier can be told from a dead one. |
+| `--days N` | `3` | Same staleness cutoff as `export-stale`. |
+| `--heartbeat` | **on** | Send a notice even when nothing is stale, so a silent notifier can be told from a dead one. |
+| `--no-heartbeat` | — | Stay silent when nothing is stale. |
 
 Channels are enabled by configuring them — every fully-configured channel
 receives the notice, none configured is an error, and a *partially*
@@ -339,8 +340,9 @@ configured channel is an error rather than a silent skip:
 The notice is the listing lines plus the total, truncated to whole lines
 with an `...and N more` marker where the channel demands it (Discord
 2000 chars, Telegram 4096); email always carries the full listing, making
-it the channel of record. With nothing stale the run sends nothing and
-exits 0 (unless `--heartbeat`); a channel that fails to send is a WARNING
+it the channel of record. With nothing stale the run still sends a
+header-only heartbeat notice by default (`0 stale traffic messages ...`);
+pass `--no-heartbeat` to stay quiet instead. A channel that fails to send is a WARNING
 in the log and makes the exit code 1 while the other channels still
 receive the notice — so cron surfaces the failure. The node link is
 closed before any notification is sent, so a slow webhook can never hold

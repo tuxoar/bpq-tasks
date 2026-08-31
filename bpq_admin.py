@@ -719,9 +719,9 @@ def build_parser():
         "export-stale", parents=[common],
         help="export traffic messages (LTN) older than --days to a "
              "timestamped folder")
-    stale.add_argument("--days", type=positive_int, default=30, metavar="N",
+    stale.add_argument("--days", type=positive_int, default=3, metavar="N",
                        help="a message N or more days old is stale "
-                            "(default 30)")
+                            "(default 3)")
     stale.add_argument("--out", dest="out_dir", default=".", metavar="DIR",
                        help="parent directory in which the per-run "
                             "stale-YYYYMMDD-HHMMSS folder is created "
@@ -741,12 +741,16 @@ def build_parser():
         "notify-stale", parents=[common],
         help="send a stale-traffic notice to the Discord/Telegram/email "
              "channels configured in the environment")
-    notify.add_argument("--days", type=positive_int, default=30, metavar="N",
+    notify.add_argument("--days", type=positive_int, default=3, metavar="N",
                         help="a message N or more days old is stale "
-                             "(default 30)")
-    notify.add_argument("--heartbeat", action="store_true",
+                             "(default 3)")
+    notify.add_argument("--heartbeat", action="store_true", default=True,
                         help="send a notice even when nothing is stale, so "
-                             "a silent notifier can be told from a dead one")
+                             "a silent notifier can be told from a dead one "
+                             "(default: on)")
+    notify.add_argument("--no-heartbeat", dest="heartbeat",
+                        action="store_false",
+                        help="stay silent when nothing is stale")
     return parser
 
 

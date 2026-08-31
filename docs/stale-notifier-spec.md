@@ -54,13 +54,13 @@ notification services, so a slow webhook can't hold the node link open.
 ### CLI
 
 ```
-python bpq_admin.py notify-stale [HOST] [--days N] [--heartbeat] [usual common args]
+python bpq_admin.py notify-stale [HOST] [--days N] [--no-heartbeat] [usual common args]
 ```
 
 | Argument | Default | Description |
 |---|---|---|
-| `--days N` | `30` | Same staleness cutoff as `export-stale`. |
-| `--heartbeat` | off | Send a notice even when nothing is stale ("0 stale traffic messages…"), so a silent notifier can be distinguished from a dead one. |
+| `--days N` | `3` | Same staleness cutoff as `export-stale`. |
+| `--heartbeat` | **on** | Send a notice even when nothing is stale ("0 stale traffic messages…"), so a silent notifier can be distinguished from a dead one. Disable with `--no-heartbeat`. |
 
 Exit codes: `0` all good (including "nothing stale, nothing sent");
 `1` BPQ unreachable/login failed, **or any configured channel failed to
@@ -118,7 +118,7 @@ Rendering notes per channel:
   full untruncated listing goes in the plain-text body (email has no
   practical limit, so email is the channel of record).
 
-With `--heartbeat` and nothing stale, the notice is the header only:
+With the default heartbeat on and nothing stale, the notice is the header only:
 `0 stale traffic messages on mynode.example.com (older than 30 days)`.
 
 ## 5. Integration setup guides
@@ -281,7 +281,7 @@ manually ("Run" in the GUI) to verify before trusting the schedule.
 | Situation | Behavior |
 |---|---|
 | Node unreachable / login rejected | ERROR in audit log, message on stderr, exit 1. Nothing sent (a channel notice about tool failure is a v2 idea — for v1, cron mail / journalctl is the failure channel). |
-| Nothing stale, no `--heartbeat` | Log "0 stale", send nothing, exit 0. |
+| Nothing stale with `--no-heartbeat` | Log "0 stale", send nothing, exit 0. |
 | One channel fails, others succeed | WARNING in log for the failed channel (with HTTP status / SMTP error), other channels still receive the notice, exit 1. |
 | No channel configured | Exit 2 before touching the node, naming the env vars checked. |
 | Notice exceeds channel limit | Truncate whole lines + `…and N more` (Discord/Telegram); email always full. |
