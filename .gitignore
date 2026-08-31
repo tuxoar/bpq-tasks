@@ -1,0 +1,12 @@
+# Audit logs - contain node hostnames and activity history
+*.log
+
+# Exported messages - contain real traffic (names, addresses, phone numbers)
+stale-*/
+exports/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
