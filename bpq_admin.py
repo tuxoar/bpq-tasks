@@ -16,6 +16,11 @@ Actions:
     kill-exported       kill the messages whose msg_<id>.txt files sit in
                         an export directory (--dir), once they have been
                         processed; --dry-run lists them without connecting
+    notify-stale        list stale traffic (read-only, LTN) and send a
+                        notice - the listing lines and the total - to
+                        every notification channel configured in the
+                        environment: Discord webhook, Telegram bot,
+                        and/or SMTP email (see docs/stale-notifier-spec.md)
 
 Runs unmodified on Windows and Linux with stock Python 3.8+. It speaks
 telnet over a raw socket on purpose: the stdlib telnetlib module was
@@ -34,15 +39,23 @@ take precedence; a missing password is prompted for.
 
 import argparse
 import datetime as dt
+import email.message
 import getpass
+import json
 import logging
 import os
 import re
+import smtplib
 import socket
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 log = logging.getLogger("bpq_admin")
+
+# Overridable so tests can point the Telegram sender at a local stub.
+TELEGRAM_API = "https://api.telegram.org"
 
 # Telnet protocol bytes
 IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
@@ -78,7 +91,11 @@ class BpqSession:
         self.transcript = ""
         self.bbs_prompt = ">"  # replaced with the real prompt in enter_bbs
         self._pending = b""  # partial IAC sequence split across recv() calls
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        try:
+            self.sock = socket.create_connection((host, port),
+                                                 timeout=timeout)
+        except OSError as exc:
+            raise OSError(f"cannot connect to {host}:{port}: {exc}") from None
         self.sock.settimeout(0.2)
 
     # --- low-level I/O -------------------------------------------------
@@ -233,7 +250,11 @@ class BpqSession:
 
     def logout(self):
         """Leave the BBS, then the node. Best-effort - the node may just
-        drop the link at any point, which is success too."""
+        drop the link at any point, which is success too. Idempotent, so
+        an action that logs out early is safe."""
+        if getattr(self, "_logged_out", False):
+            return
+        self._logged_out = True
         try:
             self.send_line("B")
             self.drain(quiet=0.5)
@@ -419,9 +440,12 @@ def do_run_reports(session, args):
     return 0
 
 
-def do_export_stale(session, args):
+def find_stale(session, days):
+    """Traffic messages in LTN that are `days` or more days old, as
+    (cutoff_date, [(msg_id, listing_line), ...]). Read-only on the BBS -
+    it only lists, never reads with R."""
     today = dt.date.today()
-    cutoff = today - dt.timedelta(days=args.days)
+    cutoff = today - dt.timedelta(days=days)
     listing = session.bbs_command("LTN")
 
     stale = []
@@ -436,7 +460,11 @@ def do_export_stale(session, args):
             continue
         if msg_date <= cutoff:
             stale.append((int(m.group(1)), line.rstrip()))
+    return cutoff, stale
 
+
+def do_export_stale(session, args):
+    cutoff, stale = find_stale(session, args.days)
     log.info("LTN: %d stale traffic message(s) dated on or before %s",
              len(stale), cutoff)
     if not stale:
@@ -452,7 +480,7 @@ def do_export_stale(session, args):
     with open(os.path.join(run_dir, "index.txt"), "w",
               encoding="utf-8") as f:
         f.write(f"stale traffic messages dated on or before {cutoff}, "
-                f"exported {today}\n\n")
+                f"exported {dt.date.today()}\n\n")
         for _, line in stale:
             f.write(line + "\n")
 
@@ -466,6 +494,173 @@ def do_export_stale(session, args):
 
     print(f"exported {len(stale)} message(s) to {run_dir}")
     return 0
+
+
+# ------------------------------------------------------------ notifications
+
+def channels_from_env(parser):
+    """The notification channels fully configured in the environment, as
+    (name, config) pairs. Partial configuration is an error, not a silent
+    skip; so is no channel at all."""
+    env = os.environ.get
+    channels = []
+
+    webhook = env("BPQ_NOTIFY_DISCORD_WEBHOOK")
+    if webhook:
+        channels.append(("discord", {"webhook": webhook}))
+
+    token = env("BPQ_NOTIFY_TELEGRAM_TOKEN")
+    chat = env("BPQ_NOTIFY_TELEGRAM_CHAT")
+    if token or chat:
+        if not (token and chat):
+            parser.error("telegram is partially configured: set both "
+                         "BPQ_NOTIFY_TELEGRAM_TOKEN and "
+                         "BPQ_NOTIFY_TELEGRAM_CHAT")
+        channels.append(("telegram", {"token": token, "chat": chat}))
+
+    smtp = {name: env("BPQ_SMTP_" + name, "")
+            for name in ("HOST", "PORT", "USER", "PASSWORD", "FROM", "TO")}
+    if any(smtp.values()):
+        missing = ["BPQ_SMTP_" + name for name in ("HOST", "FROM", "TO")
+                   if not smtp[name]]
+        if smtp["USER"] and not smtp["PASSWORD"]:
+            missing.append("BPQ_SMTP_PASSWORD")
+        if missing:
+            parser.error("email is partially configured: missing "
+                         + ", ".join(missing))
+        if smtp["PORT"] and not smtp["PORT"].isdigit():
+            parser.error(f"invalid BPQ_SMTP_PORT {smtp['PORT']!r}: "
+                         "must be a number")
+        channels.append(("email", smtp))
+
+    if not channels:
+        parser.error(
+            "no notification channel configured: set "
+            "BPQ_NOTIFY_DISCORD_WEBHOOK, BPQ_NOTIFY_TELEGRAM_TOKEN + "
+            "BPQ_NOTIFY_TELEGRAM_CHAT, and/or BPQ_SMTP_HOST/FROM/TO "
+            "(see docs/stale-notifier-spec.md)")
+    return channels
+
+
+def http_post(url, data, headers):
+    request = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(request, timeout=15.0) as response:
+        return response.status, response.read()
+
+
+def send_discord(webhook, text):
+    body = json.dumps({"content": text}).encode("utf-8")
+    status, _ = http_post(webhook, body,
+                          {"Content-Type": "application/json"})
+    if status not in (200, 204):
+        raise RuntimeError(f"discord returned HTTP {status}")
+
+
+def send_telegram(token, chat, text):
+    url = f"{TELEGRAM_API}/bot{token}/sendMessage"
+    body = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+    status, payload = http_post(
+        url, body, {"Content-Type": "application/x-www-form-urlencoded"})
+    if status != 200 or b'"ok":true' not in payload.replace(b" ", b""):
+        raise RuntimeError(f"telegram returned HTTP {status}: "
+                           f"{payload[:200].decode('utf-8', 'replace')}")
+
+
+def send_email(cfg, subject, body_text):
+    message = email.message.EmailMessage()
+    message["From"] = cfg["FROM"]
+    message["To"] = cfg["TO"]
+    message["Subject"] = subject
+    message.set_content(body_text)
+    with smtplib.SMTP(cfg["HOST"], int(cfg["PORT"] or 587),
+                      timeout=30) as relay:
+        relay.ehlo()
+        if relay.has_extn("starttls"):
+            relay.starttls()
+            relay.ehlo()
+        elif cfg["USER"]:
+            raise RuntimeError("relay does not offer STARTTLS; refusing "
+                               "to send credentials in the clear")
+        if cfg["USER"]:
+            relay.login(cfg["USER"], cfg["PASSWORD"])
+        relay.send_message(message)
+
+
+def fit_notice(header, lines, limit):
+    """Header plus as many whole listing lines as fit within `limit`
+    characters, ending with an '...and N more' marker when truncated."""
+    if not lines:
+        return header
+    total = len(lines)
+    kept = list(lines)
+    text = "\n".join([header, ""] + kept)
+    while len(text) > limit and kept:
+        kept.pop()
+        text = "\n".join([header, ""] + kept
+                         + [f"...and {total - len(kept)} more"])
+    return text
+
+
+def discord_notice(header, lines, limit=2000):
+    """Discord rendering: listing in a code fence so columns align."""
+    if not lines:
+        return header
+    total = len(lines)
+    kept = list(lines)
+    while True:
+        marker = [] if len(kept) == total else \
+            [f"...and {total - len(kept)} more"]
+        text = "\n".join([header, "```"] + kept + ["```"] + marker)
+        if len(text) <= limit or not kept:
+            return text
+        kept.pop()
+
+
+def do_notify_stale(session, args):
+    cutoff, stale = find_stale(session, args.days)
+    # Close the node link before any network sends - a slow webhook must
+    # not hold the BBS session open.
+    session.logout()
+    session.close()
+
+    count = len(stale)
+    log.info("LTN: %d stale traffic message(s) dated on or before %s",
+             count, cutoff)
+    if not stale and not args.heartbeat:
+        print("0 stale traffic messages - nothing to send")
+        return 0
+
+    plural = "" if count == 1 else "s"
+    header = (f"{count} stale traffic message{plural} on {args.host} "
+              f"(older than {args.days} days)")
+    lines = [line for _, line in stale]
+
+    failures = []
+    for name, cfg in args.channels:
+        print(f"sending notice to {name} ...", file=sys.stderr)
+        log.info("sending notice to %s", name)
+        try:
+            if name == "discord":
+                send_discord(cfg["webhook"], discord_notice(header, lines))
+            elif name == "telegram":
+                send_telegram(cfg["token"], cfg["chat"],
+                              fit_notice(header, lines, 4096))
+            else:
+                send_email(cfg,
+                           f"[BPQ] {count} stale traffic message{plural} "
+                           f"on {args.host}",
+                           fit_notice(header, lines, sys.maxsize))
+        except (OSError, RuntimeError, ValueError) as exc:
+            failures.append(name)
+            log.warning("notice to %s failed: %s", name, exc)
+            print(f"notice to {name} FAILED: {exc}", file=sys.stderr)
+        else:
+            log.info("notice sent to %s (%d message(s))", name, count)
+            print(f"notice sent to {name}")
+
+    print(f"sent to {len(args.channels) - len(failures)} of "
+          f"{len(args.channels)} channel(s); {count} stale message{plural}")
+    return 1 if failures else 0
 
 
 def build_parser():
@@ -542,6 +737,16 @@ def build_parser():
     killx.add_argument("--dry-run", action="store_true",
                        help="print the message IDs that would be killed, "
                             "without connecting to the node")
+    notify = sub.add_parser(
+        "notify-stale", parents=[common],
+        help="send a stale-traffic notice to the Discord/Telegram/email "
+             "channels configured in the environment")
+    notify.add_argument("--days", type=positive_int, default=30, metavar="N",
+                        help="a message N or more days old is stale "
+                             "(default 30)")
+    notify.add_argument("--heartbeat", action="store_true",
+                        help="send a notice even when nothing is stale, so "
+                             "a silent notifier can be told from a dead one")
     return parser
 
 
@@ -572,6 +777,15 @@ def main():
         if args.dry_run:
             print("would kill: " + " ".join(str(i) for i in ids))
             return 0
+    if args.action == "notify-stale":
+        if args.host and args.host.lower() in ("discord", "telegram", "email"):
+            parser.error(
+                f"{args.host!r} looks like a channel name, but the "
+                "positional argument is the node HOST. Channels are "
+                "selected by configuring their environment variables - "
+                "every fully-configured channel gets the notice.")
+        # Channel misconfiguration must fail before touching the node.
+        args.channels = channels_from_env(parser)
     if not args.host:
         parser.error("host is required (positional HOST, or set BPQ_HOST)")
     if not args.user:
@@ -585,7 +799,8 @@ def main():
         parser.error(f"--from {args.date_from} is after --to {args.date_to}")
     actions = {"list": do_list, "clean-housekeeping": do_clean_housekeeping,
                "run-reports": do_run_reports, "export-stale": do_export_stale,
-               "kill-exported": do_kill_exported}
+               "kill-exported": do_kill_exported,
+               "notify-stale": do_notify_stale}
     setup_logging(args.log_file)
 
     password = args.password or os.environ.get("BPQ_PASSWORD")

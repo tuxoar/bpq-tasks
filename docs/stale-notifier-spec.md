@@ -1,7 +1,8 @@
 # Spec: Automated stale-message notifier (`notify-stale`)
 
-Status: **specification** — not yet implemented. This document records the
-design so implementation is mechanical; see the checklist at the end.
+Status: **implemented** — the `notify-stale` action in `bpq_admin.py`
+follows this design. Sections 5 (channel setup guides) and 6 (scheduling)
+remain the operator's reference for wiring it up.
 
 ## 1. Overview
 

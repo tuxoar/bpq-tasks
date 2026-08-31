@@ -29,6 +29,7 @@ on Windows, macOS, and Linux.
 | `run-reports` | Run `LT` and report the traffic messages in a date range: the matching lines, then the starting message number, ending message number, and total. |
 | `export-stale` | Run `LTN`, find traffic messages older than a cutoff, read each with `R <id>`, and save them to a timestamped folder — one file per message plus an index. |
 | `kill-exported` | Kill the messages whose `msg_<id>.txt` files sit in an export folder (`--dir`) — the cleanup step once those messages have been delivered. Supports `--dry-run`. |
+| `notify-stale` | List stale traffic (read-only) and send a notice — the listing lines and the total — to every Discord webhook, Telegram bot, and/or email relay configured in the environment. Built for a scheduled run. |
 
 `extract_emails.py` then reads that folder — see
 [Recovering email addresses](#recovering-email-addresses-extract_emailspy).
@@ -154,18 +155,17 @@ an interactive prompt with hidden input (safest).
 
 **Recommended: a sourced env file.** Typing `export BPQ_PASSWORD=...` at
 the prompt still lands in shell history. Instead, put the exports in a
-file the shell reads, and lock it down:
+file the shell reads, and lock it down. The repo ships
+[`bpq.env.sample`](bpq.env.sample) with every variable both scripts
+understand — connection, QRZ, and the `notify-stale` channels — ready to
+copy:
 
 ```bash
-# Linux / macOS - create bpq.env (once), then source it per session
-cat > bpq.env <<'EOF'
-export BPQ_HOST=mynode.example.com
-export BPQ_PORT=8010
-export BPQ_USER=N0CALL
-export BPQ_PASSWORD=yourpassword
-EOF
+# Linux / macOS - once:
+cp bpq.env.sample bpq.env      # then edit in your values
 chmod 600 bpq.env
 
+# per session:
 source bpq.env
 python bpq_admin.py list
 ```
@@ -300,6 +300,59 @@ python extract_emails.py stale-20260831-081810           # emails.txt + letters/
 python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
     --dir stale-20260831-081810
 ```
+
+### `notify-stale`
+
+Unattended monitoring between delivery passes: a scheduled run (cron,
+systemd timer, or Task Scheduler — every 6 hours, say) that reports stale
+traffic so nothing sits unnoticed. It is **read-only on the BBS** — it
+only lists (`LTN`), never reads with `R` — so a stale message keeps
+appearing in every notice until you actually deal with it. That
+repetition is the point: the notice is a standing reminder, not an event
+log.
+
+```bash
+python bpq_admin.py notify-stale mynode.example.com --user N0CALL --days 30
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--days N` | `30` | Same staleness cutoff as `export-stale`. |
+| `--heartbeat` | off | Send a notice even when nothing is stale, so a silent notifier can be told from a dead one. |
+
+Channels are enabled by configuring them — every fully-configured channel
+receives the notice, none configured is an error, and a *partially*
+configured channel is an error rather than a silent skip:
+
+| Variable | Channel | Meaning |
+|---|---|---|
+| `BPQ_NOTIFY_DISCORD_WEBHOOK` | Discord | Full webhook URL. |
+| `BPQ_NOTIFY_TELEGRAM_TOKEN` | Telegram | Bot token from @BotFather. |
+| `BPQ_NOTIFY_TELEGRAM_CHAT` | Telegram | Numeric chat id. |
+| `BPQ_SMTP_HOST` | Email | Relay hostname. |
+| `BPQ_SMTP_PORT` | Email | Relay port (default `587`). |
+| `BPQ_SMTP_USER` | Email | Relay login; empty for an unauthenticated relay. |
+| `BPQ_SMTP_PASSWORD` | Email | Relay password (required when `USER` is set). |
+| `BPQ_SMTP_FROM` | Email | From address. |
+| `BPQ_SMTP_TO` | Email | Recipient(s), comma-separated. |
+
+The notice is the listing lines plus the total, truncated to whole lines
+with an `...and N more` marker where the channel demands it (Discord
+2000 chars, Telegram 4096); email always carries the full listing, making
+it the channel of record. With nothing stale the run sends nothing and
+exits 0 (unless `--heartbeat`); a channel that fails to send is a WARNING
+in the log and makes the exit code 1 while the other channels still
+receive the notice — so cron surfaces the failure. The node link is
+closed before any notification is sent, so a slow webhook can never hold
+the BBS session open. Authenticated email refuses to run without
+STARTTLS; an unauthenticated local relay (postfix on `localhost:25`) is
+fine without it.
+
+Step-by-step setup for each channel — creating the Discord webhook, the
+@BotFather flow and finding your Telegram chat id, choosing an SMTP
+relay — plus cron/systemd/Task Scheduler examples for the 6-hour
+schedule, are in
+[docs/stale-notifier-spec.md](docs/stale-notifier-spec.md).
 
 ## Recovering email addresses (`extract_emails.py`)
 
@@ -581,12 +634,3 @@ read. The `BpqSession` class in `bpq_admin.py` (login / enter_bbs /
 bbs_command / logout) is the extension point if you want to script other
 BBS commands.
 
-## Roadmap
-
-The next planned feature is a `notify-stale` action for unattended
-monitoring: a scheduled run (e.g. every six hours) that reports stale
-traffic to Discord, Telegram, and/or email, so nothing sits unnoticed
-between manual delivery passes. The full design — channel setup guides,
-environment variables, scheduling examples, and the implementation
-checklist — is in
-[docs/stale-notifier-spec.md](docs/stale-notifier-spec.md).
