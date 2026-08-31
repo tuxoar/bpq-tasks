@@ -2,16 +2,23 @@
 
 Command-line administration tooling for a [BPQ32/LinBPQ](https://www.cantab.net/users/john.wiseman/Documents/) packet-radio node.
 
-The tool, `bpq_admin.py`, connects to your node's telnet port, logs in,
-enters the BBS, performs one action, and logs out cleanly — so routine
-chores (checking mail, clearing housekeeping reports, counting NTS traffic,
-archiving old messages) become single commands you can run by hand or on a
-schedule.
+Two scripts:
 
-It is a single Python file with **no dependencies**, and runs unmodified on
-Windows, macOS, and Linux.
+- **`bpq_admin.py`** connects to your node's telnet port, logs in, enters
+  the BBS, performs one action, and logs out cleanly — so routine chores
+  (checking mail, clearing housekeeping reports, counting NTS traffic,
+  archiving old messages) become single commands you can run by hand or on
+  a schedule.
+- **`extract_emails.py`** works on the message files `export-stale`
+  produces, recovering each recipient's email address from the radiogram
+  text and, optionally, from [QRZ.com](https://www.qrz.com).
+
+Both are single Python files with **no dependencies**, and run unmodified
+on Windows, macOS, and Linux.
 
 ## What it can do
+
+`bpq_admin.py ACTION`:
 
 | Action | What it does |
 |---|---|
@@ -19,6 +26,9 @@ Windows, macOS, and Linux.
 | `clean-housekeeping` | Find every `SYSTEM Housekeeping Results` message in `LPN` and kill each one with `K <id>`. Nothing else is touched, and every kill is verified against the BBS reply. Supports `--dry-run`. |
 | `run-reports` | Run `LT` and report the traffic messages in a date range: the matching lines, then the starting message number, ending message number, and total. |
 | `export-stale` | Run `LTN`, find traffic messages older than a cutoff, read each with `R <id>`, and save them to a timestamped folder — one file per message plus an index. |
+
+`extract_emails.py` then reads that folder — see
+[Recovering email addresses](#recovering-email-addresses-extract_emailspy).
 
 ## Getting Python
 
@@ -77,7 +87,7 @@ Check your install with `python3 --version` (or `py --version` on Windows).
    cd bpq-tasks
    ```
 
-   (Or just download `bpq_admin.py` — it is self-contained.)
+   (Or just download the script you need — each is self-contained.)
 
 2. Find your node's telnet details: the host is wherever your node runs,
    and the port is the one configured in the Telnet Server section of
@@ -113,13 +123,13 @@ If that works, everything else is the same command shape:
 | `--user USER` | yes* | — | Node login user (typically your callsign). |
 | `--port PORT` | no | `8010` | Telnet port of the node, from the Telnet Server section of `bpq32.cfg`. |
 | `--password PASSWORD` | no | see below | Node login password. Prefer the env var or the interactive prompt — a password on the command line is visible in shell history and the process list. |
+| `--timeout SECONDS` | no | `10` | How long to wait for each expected prompt (login, password, BBS `>`) before giving up. Raise this for slow links. |
+| `--log-file PATH` | no | `bpq_admin.log` | Append a timestamped record of each action to this file (see Logging). Pass `--log-file ''` to disable. |
+| `--verbose` | no | off | On exit, dump the full session transcript to stderr. The first thing to reach for when something doesn't work. |
 
 \* Every connection value can come from an environment variable instead of
 the command line — see the next section. A value given on the command line
 wins over the environment.
-| `--timeout SECONDS` | no | `10` | How long to wait for each expected prompt (login, password, BBS `>`) before giving up. Raise this for slow links. |
-| `--log-file PATH` | no | `bpq_admin.log` | Append a timestamped record of each action to this file (see Logging). Pass `--log-file ''` to disable. |
-| `--verbose` | no | off | On exit, dump the full session transcript to stderr. The first thing to reach for when something doesn't work. |
 
 ### Environment variables
 
@@ -250,7 +260,104 @@ messages drop out of future `LTN` listings; and the year-less-date caveat
 applies in reverse — a message over a year old looks recent by its listing
 date, so export more often than yearly.
 
+## Recovering email addresses (`extract_emails.py`)
+
+Delivering stale traffic means contacting the addressee, and radiograms
+spell email addresses out phonetically so they survive voice and CW relay:
+
+```
+BOBLANGE01 ATSIGN ICLOUD DOT COM
+M DOT E DOT PIATTI AT SIGN GMAIL DOT COM
+N2WLH AT YAHOO DOT COM
+```
+
+`extract_emails.py` reads an `export-stale` folder, decodes those spellings
+back into ordinary addresses, and looks up anything missing on QRZ.com:
+
+```bash
+# Parse the messages only - no network, no credentials needed
+python extract_emails.py stale-20260831-083709 --no-qrz
+
+# Same, plus a QRZ lookup for every recipient
+QRZ_USER=N0CALL python extract_emails.py stale-20260831-083709
+```
+
+```
+   MSG  CALL    FROM MESSAGE           FROM QRZ               STATUS
+  2872  N2WLH   n2wlh@yahoo.com        n2wlh@yahoo.com        SAME
+  2882  KE2IRV  NONE                   ke2irv@example.net     ADDED
+  2915  N2MEP   m.e.piatti@gmail.com   -                      MSG ONLY
+  3072  N2GPX   NONE                   -                      NONE
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `DIR` | `.` | Directory of `msg_*.txt` exports (positional). |
+| `--qrz-user USER` | — | QRZ.com username. Required unless `--no-qrz`. |
+| `--qrz-password PASSWORD` | see below | QRZ.com password. Prefer the env var or the prompt. |
+| `--no-qrz` | off | Parse the message text only; make no network calls. |
+| `--log-file PATH` | `extract_emails.log` | Append the report to this file. `--log-file ''` disables. |
+| `-q`, `--quiet` | off | Write only to the log file, not to stdout. |
+
+**Who the address belongs to.** The addressee is the first line of the
+address block, which follows the preamble:
+
+```
+NR 751221 R HXCF 11 W2PAX ARL 15 NAPLES FL JULY 7   <- preamble
+MICHAEL PIATTI  N2MEP                               <- addressee
+```
+
+so the trailing callsign on that line (`N2MEP`) is the recipient. The
+callsign in the preamble is the *originating* station (`W2PAX` here) and is
+never used for lookups.
+
+**Every recipient is looked up, including those whose message already
+carried an address.** That is deliberate: it surfaces the case where QRZ
+has a different address from the one sent in the traffic, rather than
+hiding it. Each row gets a status:
+
+| Status | Meaning |
+|---|---|
+| `SAME` | The message and QRZ agree. |
+| `DIFFERS` | Both have an address and they disagree — decide which to use. |
+| `ADDED` | No address in the traffic; recovered from QRZ. |
+| `MSG ONLY` | Address in the traffic; QRZ has none published. |
+| `NONE` | No address in the traffic, and none found for the callsign. |
+
+In the `FROM QRZ` column, `-` means QRZ was queried and had no published
+address, `no callsign` means the address block had no callsign to look up,
+and `not queried` means the run used `--no-qrz`.
+
+### QRZ credentials and limits
+
+Same pattern as the node password — set them in the environment to keep
+them out of shell history and the process list:
+
+| Variable | Replaces |
+|---|---|
+| `QRZ_USER` | `--qrz-user` |
+| `QRZ_PASSWORD` | `--qrz-password` |
+
+Resolution order for the password is `--qrz-password` (least safe), then
+`QRZ_PASSWORD`, then an interactive prompt with hidden input (safest). The
+env-file recipe in [Environment variables](#environment-variables) works
+here too.
+
+Two limits worth knowing before you trust an empty result:
+
+- The QRZ **XML Logbook Data subscription** is required. A non-subscriber
+  account logs in fine but does not receive full records, so every lookup
+  would come back empty; the script prints a warning to stderr rather than
+  letting that read as "nobody has an email on file".
+- QRZ returns an address **only when the licensee has chosen to publish
+  it**. A `-` means "not published", not "does not exist".
+
+Lookups are cached per callsign within a run (a callsign appearing in three
+messages costs one query) and spaced 0.5 s apart.
+
 ## Logging
+
+### `bpq_admin.py`
 
 Every run appends a timestamped audit record to the log file (default
 `bpq_admin.log` in the current directory):
@@ -274,6 +381,33 @@ dry-run would-kill lists, and the final exit code. Failures are ERROR
 records with the reason. The file grows without rotation; trim it
 externally if you run on a schedule long-term.
 
+### `extract_emails.py`
+
+Each run appends its full report to `extract_emails.log` (default), under a
+header recording the time, the source folder, and whether QRZ was queried —
+so runs accumulate into a history rather than overwriting one another. The
+report is the table above, the summary counts, and then the rows that need
+a human decision, grouped by status:
+
+```
+=== extract_emails 2026-08-31 08:50:42 ===
+source: /home/n0call/bpq-tasks/stale-20260831-083709
+QRZ:    queried
+
+   MSG  CALL    FROM MESSAGE           FROM QRZ               STATUS
+  ...
+
+20 of 23 messages have an address  ADDED=6  DIFFERS=1  MSG ONLY=5  NONE=3  SAME=8
+
+DIFFERS (1) - QRZ address differs from the one in the traffic - confirm which to use
+    msg 2955  N2XDD  traffic=n2dxx@arrl.org  qrz=n2xdd@arrl.org
+ADDED (6) - address recovered from QRZ - not present in the traffic
+    msg 2882  KE2IRV  ke2irv@example.net
+```
+
+Use `-q` to log without printing, for scheduled runs. The log holds real
+names and addresses; see the note below.
+
 Logs and exported messages contain real callsigns, hostnames, and message
 content — the repo's `.gitignore` keeps them out of version control.
 Leave it that way if you fork this publicly.
@@ -282,11 +416,15 @@ Leave it that way if you fork this publicly.
 
 - Action results (listings, `killed <id>` lines, summaries) go to
   **stdout**; status and errors go to **stderr**, so stdout pipes and
-  redirects cleanly.
+  redirects cleanly. `extract_emails.py` follows the same split: the report
+  on stdout, per-callsign QRZ warnings on stderr.
 - Exit code `0` on success, `1` on any failure (connection refused, login
-  rejected, expected prompt never seen, or an unconfirmed kill), `2` for
-  invalid arguments. Failure messages include the text the node actually
-  sent.
+  rejected, expected prompt never seen, an unconfirmed kill, or a rejected
+  QRZ login), `2` for invalid arguments. Failure messages include the text
+  the node or QRZ actually sent.
+- A QRZ lookup that fails for one callsign warns and leaves that row's
+  `FROM QRZ` empty rather than aborting the run, so one bad record cannot
+  cost you the whole report.
 
 ## Troubleshooting
 
@@ -303,6 +441,18 @@ logs in as.
 
 **`python` isn't found.** Use `python3` (macOS/Linux) or `py` (Windows),
 and see Getting Python above.
+
+**Every QRZ lookup comes back empty.** Almost always the subscription: the
+XML Logbook Data service returns full records only to subscribers. The
+script warns on stderr when QRZ reports the account as a non-subscriber.
+Check also that the callsigns in the `CALL` column are the ones you expect
+— a message whose address block omits the callsign shows `no callsign` and
+is never looked up.
+
+**A recovered address looks wrong.** Compare it against the message text
+with `--no-qrz`. Addresses are transcribed by hand through several relays,
+so the traffic itself can carry a typo — a `DIFFERS` row is exactly that
+case, and QRZ is usually, though not always, the better source.
 
 ## Technical notes
 
