@@ -22,7 +22,11 @@ option requests refused.
 Usage:
     python bpq_admin.py list mynode.example.com --user N0CALL
     python bpq_admin.py clean-housekeeping mynode.example.com --user N0CALL
-    (password read from the BPQ_PASSWORD env var, or prompted for)
+
+Connection values can come from environment variables instead of the
+command line, so they are not captured in shell history or the process
+list: BPQ_HOST, BPQ_PORT, BPQ_USER, BPQ_PASSWORD. Command-line arguments
+take precedence; a missing password is prompted for.
 """
 
 import argparse
@@ -434,10 +438,15 @@ def do_export_stale(session, args):
 
 def build_parser():
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("host", help="hostname or IP of the BPQ node")
-    common.add_argument("--port", type=int, default=8010,
-                        help="telnet port of the node (default 8010)")
-    common.add_argument("--user", required=True, help="node login user")
+    common.add_argument("host", nargs="?",
+                        default=os.environ.get("BPQ_HOST"),
+                        help="hostname or IP of the BPQ node "
+                             "(or set BPQ_HOST)")
+    common.add_argument("--port", type=int, default=None,
+                        help="telnet port of the node "
+                             "(or set BPQ_PORT; default 8010)")
+    common.add_argument("--user", default=os.environ.get("BPQ_USER"),
+                        help="node login user (or set BPQ_USER)")
     common.add_argument("--password",
                         help="node login password (else BPQ_PASSWORD env "
                              "var, else prompted)")
@@ -508,6 +517,15 @@ def setup_logging(path):
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if not args.host:
+        parser.error("host is required (positional HOST, or set BPQ_HOST)")
+    if not args.user:
+        parser.error("--user is required (or set BPQ_USER)")
+    if args.port is None:
+        port_env = os.environ.get("BPQ_PORT", "")
+        if port_env and not port_env.isdigit():
+            parser.error(f"invalid BPQ_PORT {port_env!r}: must be a number")
+        args.port = int(port_env) if port_env else 8010
     if args.action == "run-reports" and args.date_from > args.date_to:
         parser.error(f"--from {args.date_from} is after --to {args.date_to}")
     actions = {"list": do_list, "clean-housekeeping": do_clean_housekeeping,

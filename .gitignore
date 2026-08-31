@@ -5,6 +5,11 @@
 stale-*/
 exports/
 
+# Local credential files (sourced env files hold the node password)
+*.env
+*.env.ps1
+*.env.bat
+
 # Python
 __pycache__/
 *.pyc
