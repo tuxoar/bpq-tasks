@@ -4,6 +4,8 @@
 Actions:
     list                connect, log in, enter the BBS, run LPN (list
                         private new messages) and print the listing
+    list-held           run LH and print every held message - traffic
+                        the BBS is holding back from forwarding
     clean-housekeeping  run LPN, find every "SYSTEM Housekeeping Results"
                         message, and kill each one with the K command;
                         --dry-run shows what would be killed
@@ -21,6 +23,12 @@ Actions:
                         every notification channel configured in the
                         environment: Discord webhook, Telegram bot,
                         and/or SMTP email (see docs/stale-notifier-spec.md)
+    check-routing       inspect every LTN traffic message's To header;
+                        one that does not look like 13743@NTSNY (US) or
+                        B0W2J0@NTSNS (Canada) will not be routed
+                        properly, and is reported (exit 1).
+                        --senders audits the full LT history instead and
+                        reports which senders have created bad headers
 
 Runs unmodified on Windows and Linux with stock Python 3.8+. It speaks
 telnet over a raw socket on purpose: the stdlib telnetlib module was
@@ -78,8 +86,31 @@ HOUSEKEEPING_RE = re.compile(
 #   316    24-Oct TF     502 14424  @NTSNY  KC1KVY CANANDAIGUA 585 755
 TRAFFIC_LINE_RE = re.compile(r"^\s*(\d+)\s+(\d{1,2})-([A-Za-z]{3})\s+T\S\s")
 
+# The same line with the To, route, and From columns captured: id, then
+# after type and size the To field, the @route only when one is present
+# (the From column never starts with '@'), then the sender.
+TRAFFIC_FIELDS_RE = re.compile(
+    r"^\s*(\d+)\s+\d{1,2}-[A-Za-z]{3}\s+T\S\s+\d+\s+(\S+)"
+    r"(?:\s+(@\S+))?\s+(\S+)")
+
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+
+# USPS two-letter abbreviations: states, DC, territories, military.
+US_STATES = (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI "
+    "MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT "
+    "VT VA WA WV WI WY DC PR VI GU AS MP AA AE AP").split()
+
+# Canada Post two-letter province/territory abbreviations.
+CA_PROVINCES = "AB BC MB NB NL NS NT NU ON PE QC SK YT".split()
+
+# A routable NTS To header: a US zip @NTS<state> (13743@NTSNY), or a
+# Canadian postal code @NTS<province> (B0W2J0@NTSNS). The code style
+# must match the region - a US zip routed to a province is flagged.
+DEFAULT_ROUTE_PATTERN = (
+    r"(?:\d{5}@NTS(?:" + "|".join(US_STATES) + r")"
+    r"|[A-Z]\d[A-Z]\d[A-Z]\d@NTS(?:" + "|".join(CA_PROVINCES) + "))")
 
 
 class BpqSession:
@@ -325,6 +356,12 @@ def do_list(session, args):
     return 0
 
 
+def do_list_held(session, args):
+    listing = session.bbs_command("LH")
+    print(listing if listing.strip() else "(no held messages)")
+    return 0
+
+
 def do_clean_housekeeping(session, args):
     listing = session.bbs_command("LPN")
     ids = housekeeping_ids(listing)
@@ -494,6 +531,80 @@ def do_export_stale(session, args):
 
     print(f"exported {len(stale)} message(s) to {run_dir}")
     return 0
+
+
+def do_check_routing(session, args):
+    # --senders audits the full LT history to find repeat offenders;
+    # the default checks only the new traffic in LTN.
+    command = "LT" if args.senders else "LTN"
+    listing = session.bbs_command(command)
+
+    rows = []  # (msg_id, header, sender, ok, listing_line)
+    for line in listing.splitlines():
+        m = TRAFFIC_FIELDS_RE.match(line)
+        if not m:
+            continue
+        header = m.group(2) + (m.group(3) or "")
+        ok = bool(args.route_re.fullmatch(header))
+        rows.append((m.group(1), header, m.group(4), ok, line.rstrip()))
+        if not ok:
+            log.warning("msg %s from %s has unroutable To header %r",
+                        m.group(1), m.group(4), header)
+
+    checked = len(rows)
+    bad = [row for row in rows if not row[3]]
+    log.info("%s: checked %d traffic message(s), %d with a bad To header",
+             command, checked, len(bad))
+
+    if args.senders:
+        return sender_report(rows, args.show_all)
+
+    if args.show_all:
+        for msg_id, header, _, ok, _ in rows:
+            print(f"{msg_id:>6}  {'OK ' if ok else 'BAD'}  {header}")
+        if rows:
+            print()
+    if not bad:
+        print(f"all {checked} traffic messages have a proper To header")
+        return 0
+    if not args.show_all:
+        for msg_id, header, _, _, line in bad:
+            print(line)
+            print(f"    msg {msg_id}: To reads {header!r} - expected "
+                  f"13743@NTSNY (US) or B0W2J0@NTSNS (Canada)")
+        print()
+    print(f"{len(bad)} of {checked} traffic message(s) will not be "
+          f"routed properly")
+    return 1
+
+
+def sender_report(rows, show_all):
+    """Per-sender bad-header summary over the scanned messages."""
+    stats = {}
+    for msg_id, header, sender, ok, _ in rows:
+        entry = stats.setdefault(sender, {"bad": 0, "total": 0, "eg": []})
+        entry["total"] += 1
+        if not ok:
+            entry["bad"] += 1
+            if len(entry["eg"]) < 3:
+                entry["eg"].append(f"{header} (msg {msg_id})")
+
+    offenders = {s: e for s, e in stats.items() if e["bad"]}
+    shown = stats if show_all else offenders
+    if shown:
+        width = max([len(s) for s in shown] + [len("SENDER")])
+        print(f"{'SENDER':<{width}}  {'BAD':>4}  {'TOTAL':>5}  EXAMPLES")
+        for sender, entry in sorted(shown.items(),
+                                    key=lambda kv: (-kv[1]["bad"],
+                                                    -kv[1]["total"], kv[0])):
+            print(f"{sender:<{width}}  {entry['bad']:>4}  "
+                  f"{entry['total']:>5}  {', '.join(entry['eg'])}")
+        print()
+
+    bad_total = sum(e["bad"] for e in stats.values())
+    print(f"{len(offenders)} of {len(stats)} sender(s) have created bad "
+          f"headers ({bad_total} of {len(rows)} message(s))")
+    return 1 if offenders else 0
 
 
 # ------------------------------------------------------------ notifications
@@ -693,6 +804,8 @@ def build_parser():
                                 metavar="action")
     sub.add_parser("list", parents=[common],
                    help="list private new messages (LPN)")
+    sub.add_parser("list-held", parents=[common],
+                   help="list held messages (LH)")
     clean = sub.add_parser(
         "clean-housekeeping", parents=[common],
         help="kill every 'SYSTEM Housekeeping Results' message in LPN")
@@ -751,6 +864,22 @@ def build_parser():
     notify.add_argument("--no-heartbeat", dest="heartbeat",
                         action="store_false",
                         help="stay silent when nothing is stale")
+    check = sub.add_parser(
+        "check-routing", parents=[common],
+        help="report LTN traffic messages whose To header will not route "
+             "(not of the form 13743@NTSNY)")
+    check.add_argument("--pattern", default=None,
+                       help="regex a routable To header must fully match, "
+                            "case-insensitively (default: a 5-digit zip "
+                            "@NTS + a real US state/territory, or a "
+                            "Canadian postal code @NTS + a real province)")
+    check.add_argument("--show-all", action="store_true",
+                       help="print every message checked and the routing "
+                            "header it carries, not just the offenders "
+                            "(with --senders: include clean senders)")
+    check.add_argument("--senders", action="store_true",
+                       help="scan the full LT history instead of LTN and "
+                            "report which senders have created bad headers")
     return parser
 
 
@@ -781,6 +910,12 @@ def main():
         if args.dry_run:
             print("would kill: " + " ".join(str(i) for i in ids))
             return 0
+    if args.action == "check-routing":
+        pattern = args.pattern or DEFAULT_ROUTE_PATTERN
+        try:
+            args.route_re = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            parser.error(f"invalid --pattern {args.pattern!r}: {exc}")
     if args.action == "notify-stale":
         if args.host and args.host.lower() in ("discord", "telegram", "email"):
             parser.error(
@@ -801,10 +936,12 @@ def main():
         args.port = int(port_env) if port_env else 8010
     if args.action == "run-reports" and args.date_from > args.date_to:
         parser.error(f"--from {args.date_from} is after --to {args.date_to}")
-    actions = {"list": do_list, "clean-housekeeping": do_clean_housekeeping,
+    actions = {"list": do_list, "list-held": do_list_held,
+               "clean-housekeeping": do_clean_housekeeping,
                "run-reports": do_run_reports, "export-stale": do_export_stale,
                "kill-exported": do_kill_exported,
-               "notify-stale": do_notify_stale}
+               "notify-stale": do_notify_stale,
+               "check-routing": do_check_routing}
     setup_logging(args.log_file)
 
     password = args.password or os.environ.get("BPQ_PASSWORD")
