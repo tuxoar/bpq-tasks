@@ -11,7 +11,9 @@ Two scripts:
   a schedule.
 - **`extract_emails.py`** works on the message files `export-stale`
   produces, recovering each recipient's email address from the radiogram
-  text and, optionally, from [QRZ.com](https://www.qrz.com).
+  text and, optionally, from [QRZ.com](https://www.qrz.com) — then writes
+  a ready-to-send email for each message it finds an address for, and a
+  printable letter for postal delivery for each message it doesn't.
 
 Both are single Python files with **no dependencies**, and run unmodified
 on Windows, macOS, and Linux.
@@ -296,8 +298,48 @@ QRZ_USER=N0CALL python extract_emails.py stale-20260831-083709
 | `--qrz-user USER` | — | QRZ.com username. Required unless `--no-qrz`. |
 | `--qrz-password PASSWORD` | see below | QRZ.com password. Prefer the env var or the prompt. |
 | `--no-qrz` | off | Parse the message text only; make no network calls. |
+| `--emails-file PATH` | `emails.txt` in `DIR` | Where to write the ready-to-send emails (below). `--emails-file ''` disables. |
+| `--letters-dir PATH` | `letters/` in `DIR` | Where to write printable letters for messages with no address (below). `--letters-dir ''` disables. |
 | `--log-file PATH` | `extract_emails.log` | Append the report to this file. `--log-file ''` disables. |
 | `-q`, `--quiet` | off | Write only to the log file, not to stdout. |
+
+**Ready-to-send emails.** Besides the report, every message with an
+address gets a copy-paste email block, all collected into one file
+(`emails.txt` in the export folder by default). Each block holds the To
+line, a subject, a fixed delivery notice, and the radiogram itself with
+the BBS headers, routing traces, and export footer stripped:
+
+```
+########## msg 2872 ##########
+
+To: n2wlh@yahoo.com
+Subject: Digital NTS Traffic for N2WLH
+
+Body: 
+The message(s) below was received for you via the Digital National Traffic System. For more on the National Traffic system visit https://nts2.arrl.org/ or https://radiorelay.org/
+
+73, Shaun W2QS Region 2 Hub Sysop
+
+====
+NR 7439 R AA5AF 21 SEGUIN TX JUL 2ND
+STEVEN H JACKSON N2WLH
+...
+NNNN
+```
+
+When the traffic and QRZ disagree (`DIFFERS`), the To line carries both
+addresses. The file is rewritten on every run, and the export folder is
+gitignored, so the generated emails stay out of the public repo.
+
+**Printable letters for everyone else.** Messages with no address at all
+(no email in the traffic, none on QRZ) each get their own file —
+`letters/letter_<id>.txt` in the export folder — formatted like the
+emails but with no To/Subject header, ready to print and mail (see
+[Printing the letters](#printing-the-letters)). The
+radiogram's address block carries the recipient's street address, so the
+printout itself tells you how to address the envelope. Every message in
+the export therefore ends up in exactly one place: `emails.txt` if an
+address was found, `letters/` if not.
 
 **Who the address belongs to.** The addressee is the first line of the
 address block, which follows the preamble:
@@ -327,6 +369,40 @@ hiding it. Each row gets a status:
 In the `FROM QRZ` column, `-` means QRZ was queried and had no published
 address, `no callsign` means the address block had no callsign to look up,
 and `not queried` means the run used `--no-qrz`.
+
+### Printing the letters
+
+Each letter is a plain text file that fits on a single page, so anything
+that prints a text file works. From the command line:
+
+**Linux / macOS** — both print through CUPS, which formats plain text on
+its own. `lp` sends a file to the default printer:
+
+```bash
+cd stale-20260831-081810        # your export folder
+for f in letters/letter_*.txt; do lp "$f"; done
+```
+
+The loop gives each letter its own print job, so re-printing a single one
+is just `lp letters/letter_2882.txt`. If the wrong printer (or no
+printer) is the default, list your queues with `lpstat -p`, send to a
+specific one with `lp -d QUEUE-NAME file`, and make that choice stick
+with `lpoptions -d QUEUE-NAME`. Watch the queue with `lpstat -o` — an
+empty listing means everything has printed.
+
+**Windows (PowerShell)** — `Out-Printer` sends text to the default
+printer:
+
+```powershell
+Get-ChildItem letters\letter_*.txt | ForEach-Object { Get-Content $_ | Out-Printer }
+```
+
+Add `-Name "Printer Name"` to `Out-Printer` to target a specific printer;
+`Get-Printer` lists what's installed.
+
+The printout carries the recipient's street address from the radiogram's
+address block, so addressing the envelope is a matter of copying it off
+the page.
 
 ### QRZ credentials and limits
 

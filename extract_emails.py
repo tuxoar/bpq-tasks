@@ -9,7 +9,15 @@ and CW relay, e.g.
     M DOT E DOT PIATTI AT SIGN GMAIL DOT COM
 
 This walks a directory of msg_*.txt exports, decodes those spellings back
-into normal addresses, and prints one row per message.
+into normal addresses, and prints one row per message. For every message
+that has an address it also writes a ready-to-send email block (To,
+Subject, body text, then the radiogram stripped of BBS headers, routing
+traces and the export footer) into one file, emails.txt in the export
+directory by default. When the traffic and QRZ give different addresses,
+the To line carries both. Messages with no address at all instead each
+get a printable letter file (letters/letter_<id>.txt in the export
+directory) for delivery by postal mail - the radiogram's address block
+carries the street address.
 
 The addressee is the first line of the address block, which follows the
 preamble line, e.g.
@@ -105,6 +113,13 @@ ADDRESS_RE = re.compile(
 # Pseudo-TLDs from the packet radio hierarchical addressing scheme.
 BBS_TLDS = {"noam", "usa", "eura", "asia", "soam", "afri", "aunz", "mdrs", "ampr"}
 
+EMAIL_INTRO = (
+    "The message(s) below was received for you via the Digital National "
+    "Traffic System. For more on the National Traffic system visit "
+    "https://nts2.arrl.org/ or https://radiorelay.org/")
+
+EMAIL_SIGNATURE = "73, Shaun W2QS Region 2 Hub Sysop"
+
 
 def body_lines(text):
     """The message body: everything bar routing traces, embedded headers
@@ -145,6 +160,16 @@ def find_address(lines):
             if plausible(local, domain):
                 return f"{local}@{domain}".lower()
     return None
+
+
+def trimmed(lines):
+    """The lines with leading and trailing blank lines removed."""
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
 
 
 def find_recipient(lines):
@@ -303,6 +328,53 @@ def build_report(rows, queried, directory):
     return out
 
 
+def build_emails(rows, contents):
+    """Ready-to-send email blocks, one per message with an address.
+
+    When the traffic and QRZ both yielded an address and they differ,
+    the To line carries both.
+    """
+    blocks = []
+    for msg_id, callsign, msg_email, qrz_email, _ in rows:
+        addresses = list(dict.fromkeys(a for a in (msg_email, qrz_email) if a))
+        if not addresses:
+            continue
+        subject = "Digital NTS Traffic" + (f" for {callsign}" if callsign else "")
+        blocks.append("\n".join([
+            f"########## msg {msg_id} ##########",
+            "",
+            f"To: {', '.join(addresses)}",
+            f"Subject: {subject}",
+            "",
+            "Body: ",
+            EMAIL_INTRO,
+            "",
+            EMAIL_SIGNATURE,
+            "",
+            "====",
+            *trimmed(contents[msg_id]),
+            "",
+        ]))
+    return blocks
+
+
+def build_letter(callsign, content):
+    """A printable letter for a message with no address: the same delivery
+    notice as the emails, then the radiogram (whose address block carries
+    the street address for the envelope)."""
+    return "\n".join([
+        "Digital NTS Traffic" + (f" for {callsign}" if callsign else ""),
+        "",
+        EMAIL_INTRO,
+        "",
+        EMAIL_SIGNATURE,
+        "",
+        "====",
+        *trimmed(content),
+        "",
+    ])
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -316,6 +388,15 @@ def main():
                              "for if a user is given without one)")
     parser.add_argument("--no-qrz", action="store_true",
                         help="parse the messages only, skip QRZ lookups")
+    parser.add_argument("--emails-file", default=None,
+                        help="write the ready-to-send email blocks to this "
+                             "file (default: emails.txt in the export "
+                             "directory; --emails-file '' to disable)")
+    parser.add_argument("--letters-dir", default=None,
+                        help="write a printable letter per message without "
+                             "any address into this directory (default: "
+                             "letters/ in the export directory; "
+                             "--letters-dir '' to disable)")
     parser.add_argument("--log-file", default="extract_emails.log",
                         help="append the report to this file for later reading "
                              "(default: %(default)s; --log-file '' to disable)")
@@ -340,12 +421,13 @@ def main():
         except QrzError as exc:
             sys.exit(f"QRZ login failed: {exc}")
 
-    rows, warnings = [], []
+    rows, contents, warnings = [], {}, []
     for name in names:
         with open(os.path.join(args.directory, name),
                   encoding="utf-8", errors="replace") as handle:
             lines = body_lines(handle.read())
         msg_id = re.search(r"\d+", name).group()
+        contents[msg_id] = lines
         callsign = find_recipient(lines)
         msg_email = find_address(lines)
 
@@ -370,6 +452,35 @@ def main():
             handle.write("\n".join(report) + "\n\n")
         if not args.quiet:
             print(f"\nreport appended to {os.path.abspath(args.log_file)}")
+
+    emails_path = (args.emails_file if args.emails_file is not None
+                   else os.path.join(args.directory, "emails.txt"))
+    if emails_path:
+        blocks = build_emails(rows, contents)
+        if blocks:
+            with open(emails_path, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(blocks) + "\n")
+            if not args.quiet:
+                print(f"{len(blocks)} email(s) written to "
+                      f"{os.path.abspath(emails_path)}")
+        elif not args.quiet:
+            print("no messages with an address - no emails file written")
+
+    letters_dir = (args.letters_dir if args.letters_dir is not None
+                   else os.path.join(args.directory, "letters"))
+    if letters_dir:
+        no_address = [(msg_id, callsign)
+                      for msg_id, callsign, msg_email, qrz_email, _ in rows
+                      if not msg_email and not qrz_email]
+        if no_address:
+            os.makedirs(letters_dir, exist_ok=True)
+            for msg_id, callsign in no_address:
+                path = os.path.join(letters_dir, f"letter_{msg_id}.txt")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(build_letter(callsign, contents[msg_id]))
+            if not args.quiet:
+                print(f"{len(no_address)} letter(s) for messages without an "
+                      f"address written to {os.path.abspath(letters_dir)}")
 
 
 if __name__ == "__main__":
