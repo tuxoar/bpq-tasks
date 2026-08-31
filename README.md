@@ -28,6 +28,7 @@ on Windows, macOS, and Linux.
 | `clean-housekeeping` | Find every `SYSTEM Housekeeping Results` message in `LPN` and kill each one with `K <id>`. Nothing else is touched, and every kill is verified against the BBS reply. Supports `--dry-run`. |
 | `run-reports` | Run `LT` and report the traffic messages in a date range: the matching lines, then the starting message number, ending message number, and total. |
 | `export-stale` | Run `LTN`, find traffic messages older than a cutoff, read each with `R <id>`, and save them to a timestamped folder — one file per message plus an index. |
+| `kill-exported` | Kill the messages whose `msg_<id>.txt` files sit in an export folder (`--dir`) — the cleanup step once those messages have been delivered. Supports `--dry-run`. |
 
 `extract_emails.py` then reads that folder — see
 [Recovering email addresses](#recovering-email-addresses-extract_emailspy).
@@ -261,6 +262,44 @@ Two things to know: reading a message marks it read on the BBS, so exported
 messages drop out of future `LTN` listings; and the year-less-date caveat
 applies in reverse — a message over a year old looks recent by its listing
 date, so export more often than yearly.
+
+### `kill-exported`
+
+The last step of the workflow: once an export folder's messages have been
+delivered (emailed via `emails.txt`, letters printed and mailed), remove
+them from the BBS. The folder itself is the kill list — every
+`msg_<id>.txt` in it names one message to kill:
+
+```bash
+# Preview - reads only the folder, no connection, no credentials needed
+python bpq_admin.py kill-exported --dir stale-20260831-081810 --dry-run
+
+# Kill them on the node
+python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
+    --dir stale-20260831-081810
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--dir DIR` | required | Export folder whose `msg_<id>.txt` files name the messages to kill. Other files in the folder (`index.txt`, `emails.txt`, `letters/`) are ignored. |
+| `--dry-run` | off | Print the message IDs that would be killed and exit — without connecting to the node at all. |
+
+Every kill is verified against the BBS reply, exactly like
+`clean-housekeeping`: an unconfirmed kill (for example a message that was
+already killed by hand) is reported on stderr and makes the exit code 1,
+while the remaining kills still proceed. Because the export folder never
+changes, re-running after a partial failure is safe — already-dead
+messages just show up as unconfirmed.
+
+The full stale-traffic workflow is therefore:
+
+```bash
+python bpq_admin.py export-stale mynode.example.com --user N0CALL --days 60
+python extract_emails.py stale-20260831-081810           # emails.txt + letters/
+# ... send the emails, print and mail the letters ...
+python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
+    --dir stale-20260831-081810
+```
 
 ## Recovering email addresses (`extract_emails.py`)
 

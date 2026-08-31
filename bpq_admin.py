@@ -13,6 +13,9 @@ Actions:
     export-stale        run LTN, find traffic messages --days or more days
                         old, and export each one (read with R) into a new
                         folder named after the run's timestamp
+    kill-exported       kill the messages whose msg_<id>.txt files sit in
+                        an export directory (--dir), once they have been
+                        processed; --dry-run lists them without connecting
 
 Runs unmodified on Windows and Linux with stock Python 3.8+. It speaks
 telnet over a raw socket on purpose: the stdlib telnetlib module was
@@ -319,6 +322,17 @@ def do_clean_housekeeping(session, args):
         print("would kill: " + " ".join(str(i) for i in ids))
         return 0
 
+    failures = kill_messages(session, ids)
+    log.info("killed %d of %d housekeeping message(s)",
+             len(ids) - len(failures), len(ids))
+    print(f"killed {len(ids) - len(failures)} of {len(ids)} "
+          f"housekeeping messages")
+    return 1 if failures else 0
+
+
+def kill_messages(session, ids):
+    """Kill each message with K, verifying every BBS reply. Returns the
+    IDs whose kill the BBS did not confirm."""
     failures = []
     for msg_id in ids:
         reply = session.bbs_command(f"K {msg_id}")
@@ -331,11 +345,29 @@ def do_clean_housekeeping(session, args):
                         msg_id, reply.strip())
             print(f"NOT CONFIRMED for {msg_id}: {reply.strip()}",
                   file=sys.stderr)
+    return failures
 
-    log.info("killed %d of %d housekeeping message(s)",
+
+def exported_ids(directory):
+    """Message IDs of the msg_<id>.txt files in an export directory."""
+    try:
+        names = os.listdir(directory)
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {directory}: {exc}")
+    return sorted(int(m.group(1)) for m in
+                  (re.fullmatch(r"msg_(\d+)\.txt", n) for n in names) if m)
+
+
+def do_kill_exported(session, args):
+    ids = exported_ids(args.export_dir)
+    log.info("killing %d message(s) exported to %s", len(ids), args.export_dir)
+    print(f"killing the {len(ids)} message(s) exported to {args.export_dir}",
+          file=sys.stderr)
+    failures = kill_messages(session, ids)
+    log.info("killed %d of %d exported message(s)",
              len(ids) - len(failures), len(ids))
     print(f"killed {len(ids) - len(failures)} of {len(ids)} "
-          f"housekeeping messages")
+          f"exported messages")
     return 1 if failures else 0
 
 
@@ -499,6 +531,17 @@ def build_parser():
                        help="parent directory in which the per-run "
                             "stale-YYYYMMDD-HHMMSS folder is created "
                             "(default: current directory)")
+    killx = sub.add_parser(
+        "kill-exported", parents=[common],
+        help="kill the messages whose msg_<id>.txt files are in an "
+             "export directory")
+    killx.add_argument("--dir", dest="export_dir", required=True,
+                       metavar="DIR",
+                       help="export directory containing the msg_<id>.txt "
+                            "files of the processed messages")
+    killx.add_argument("--dry-run", action="store_true",
+                       help="print the message IDs that would be killed, "
+                            "without connecting to the node")
     return parser
 
 
@@ -517,6 +560,18 @@ def setup_logging(path):
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if args.action == "kill-exported":
+        # Validate the directory (and satisfy --dry-run) before requiring
+        # credentials or touching the node - a preview is filesystem-only.
+        try:
+            ids = exported_ids(args.export_dir)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if not ids:
+            parser.error(f"no msg_<id>.txt files in {args.export_dir}")
+        if args.dry_run:
+            print("would kill: " + " ".join(str(i) for i in ids))
+            return 0
     if not args.host:
         parser.error("host is required (positional HOST, or set BPQ_HOST)")
     if not args.user:
@@ -529,7 +584,8 @@ def main():
     if args.action == "run-reports" and args.date_from > args.date_to:
         parser.error(f"--from {args.date_from} is after --to {args.date_to}")
     actions = {"list": do_list, "clean-housekeeping": do_clean_housekeeping,
-               "run-reports": do_run_reports, "export-stale": do_export_stale}
+               "run-reports": do_run_reports, "export-stale": do_export_stale,
+               "kill-exported": do_kill_exported}
     setup_logging(args.log_file)
 
     password = args.password or os.environ.get("BPQ_PASSWORD")
