@@ -7,18 +7,25 @@ remain the operator's reference for wiring it up.
 ## 1. Overview
 
 An unattended job runs every 6 hours, connects to the BPQ node, finds
-traffic messages older than a cutoff, and pushes a short notice to one or
-more channels: Discord, Telegram, and/or email (via an SMTP relay). The
-notice contains only the list of stale messages and the total count.
+traffic messages older than a cutoff *and* the new private messages the
+BBS is not forwarding on, and pushes a short notice to one or more
+channels: Discord, Telegram, and/or email (via an SMTP relay). The
+notice contains only the two listings and their totals.
 
 Goals:
 
-- **Read-only on the BBS.** The job only lists messages (`LTN`); it never
-  reads them with `R`, so nothing is marked read and nothing changes on the
-  node. A stale message keeps appearing in every 6-hour notice until the
+- **Read-only on the BBS.** The job only lists messages (`LTN`, `LPN`); it
+  never reads them with `R`, so nothing is marked read and nothing changes
+  on the node. A message keeps appearing in every 6-hour notice until the
   sysop deals with it (with `export-stale`, or by killing it) — that
   repetition is intentional: the notice is a standing reminder, not an
   event log.
+- **Both kinds of stuck message.** Stale traffic ages into the notice
+  after `--days`; new private mail (`LPN`) goes in as soon as it appears,
+  because nothing forwards it on and no cutoff makes it any more stuck
+  than it already is. `SYSTEM Housekeeping Results` reports are excluded —
+  `clean-housekeeping` owns those, and they would otherwise crowd out the
+  real mail.
 - **Zero new dependencies.** All three channels are reachable with the
   Python standard library (`urllib.request` for Discord/Telegram webhooks,
   `smtplib` for email), preserving the tool's copy-one-file portability.
@@ -37,6 +44,8 @@ scheduler (every 6h)
        ├─ BpqSession: connect → login → enter BBS        (existing code)
        ├─ find_stale(session, days): LTN → parse → filter (refactored out
        │     of do_export_stale; same TRAFFIC_LINE_RE + most_recent logic)
+       ├─ find_stuck_private(session): LPN → parse → drop housekeeping
+       │     (PRIVATE_LINE_RE + the existing housekeeping_ids helper)
        ├─ logout                                          (existing code)
        └─ for each configured channel: send notice
              ├─ Discord webhook  (urllib.request)
@@ -59,10 +68,10 @@ python bpq_admin.py notify-stale [HOST] [--days N] [--no-heartbeat] [usual commo
 
 | Argument | Default | Description |
 |---|---|---|
-| `--days N` | `3` | Same staleness cutoff as `export-stale`. |
-| `--heartbeat` | **on** | Send a notice even when nothing is stale ("0 stale traffic messages…"), so a silent notifier can be distinguished from a dead one. Disable with `--no-heartbeat`. |
+| `--days N` | `3` | Same staleness cutoff as `export-stale`. Applies to traffic only; private mail is always reported. |
+| `--heartbeat` | **on** | Send a notice even when there is nothing to report ("0 stale traffic messages… 0 new private messages…"), so a silent notifier can be distinguished from a dead one. Disable with `--no-heartbeat`. |
 
-Exit codes: `0` all good (including "nothing stale, nothing sent");
+Exit codes: `0` all good (including "nothing to report, nothing sent");
 `1` BPQ unreachable/login failed, **or any configured channel failed to
 send**; `2` bad arguments / no channel configured.
 
@@ -95,8 +104,8 @@ node connection as they do for every action.)
 
 ## 4. Notice format
 
-Identical content on every channel — a header, the raw listing lines,
-nothing else:
+Identical content on every channel — a header and the raw listing lines
+for each of the two sections, nothing else:
 
 ```
 14 stale traffic messages on mynode.example.com (older than 30 days)
@@ -104,7 +113,16 @@ nothing else:
 316    24-Oct TF     502 14424  @NTSNY  KC1KVY CANANDAIGUA 585 755
 314    23-Oct TF     503 19119  @NTSPA  WO2H   PHILADELPHIA 231 866
 ...
+
+2 new private messages on mynode.example.com (not forwarding)
+
+3309   31-Aug PN      22 W2QS   @W2QS   W2QS   test
+3310   01-Sep PN      44 KC1KVY @KC1KVY W2QS   qsl please
 ```
+
+Truncation drops whole lines from the *longer* section first, each
+shortened section carrying its own `…and N more`, so a flood of stale
+traffic cannot squeeze the private mail out of the notice.
 
 Rendering notes per channel:
 
@@ -114,12 +132,15 @@ Rendering notes per channel:
 - **Telegram**: send as plain text (no parse_mode — listing lines contain
   characters that Markdown parsing would mangle); hard limit 4096
   characters, same truncation rule.
-- **Email**: subject `[BPQ] 14 stale traffic messages on mynode`; the
-  full untruncated listing goes in the plain-text body (email has no
-  practical limit, so email is the channel of record).
+- **Email**: subject `[BPQ] 14 stale traffic messages, 2 new private
+  messages on mynode`; both full untruncated listings go in the
+  plain-text body (email has no practical limit, so email is the channel
+  of record).
 
-With the default heartbeat on and nothing stale, the notice is the header only:
-`0 stale traffic messages on mynode.example.com (older than 30 days)`.
+With the default heartbeat on and nothing to report, the notice is the two
+headers only: `0 stale traffic messages on mynode.example.com (older than
+30 days)` and `0 new private messages on mynode.example.com (not
+forwarding)`.
 
 ## 5. Integration setup guides
 
@@ -298,9 +319,10 @@ logged — consistent with current logging rules.
   **write-capable credentials**. Keep them in `bpq.env` with `chmod 600`,
   never on the command line. The repo `.gitignore` already excludes
   `*.env`, `*.env.ps1`, `*.env.bat`.
-- Notices contain callsigns and city/phone fragments from the LTN listing
-  — send them only to channels the sysop controls (a private Discord
-  channel / Telegram chat, not a public one).
+- Notices contain callsigns and city/phone fragments from the LTN listing,
+  and the subject lines of private mail from LPN — send them only to
+  channels the sysop controls (a private Discord channel / Telegram chat,
+  not a public one).
 - Telegram `getUpdates` responses and Discord webhook URLs pasted into
   issues/chats are the common leak paths; rotate via BotFather
   (`/revoke`) or by deleting/recreating the webhook if exposed.
@@ -317,9 +339,14 @@ logged — consistent with current logging rules.
    or on partial configuration.
 4. Add `do_notify_stale` + `notify-stale` subparser (`--days`,
    `--heartbeat`); wire into the `actions` dict.
-5. Truncation helper honoring the 2000/4096 caps with `…and N more`.
-6. Tests against the mock BPQ server plus a local `http.server` stub for
+5. Add `find_stuck_private(session)`: LPN → `PRIVATE_LINE_RE` → drop the
+   ids `housekeeping_ids` reports; `notify-stale` sends it as a second
+   section of the notice.
+6. Truncation helper honoring the 2000/4096 caps with `…and N more`,
+   shortening the longer section first so one section cannot crowd out
+   the other.
+7. Tests against the mock BPQ server plus a local `http.server` stub for
    Discord/Telegram and `smtpd`-style stub (or `aiosmtpd`-free minimal
    socket accept) for SMTP; verify exit codes for the failure matrix in §7.
-7. README: new action row, env var table additions, scheduling section
+8. README: new action row, env var table additions, scheduling section
    pointer to this spec.

@@ -5,10 +5,21 @@
 Unattended monitoring between delivery passes: a scheduled run (cron,
 systemd timer, or Task Scheduler — every 6 hours, say) that reports stale
 traffic so nothing sits unnoticed. It is **read-only on the BBS** — it
-only lists (`LTN`), never reads with `R` — so a stale message keeps
+only lists (`LTN` and `LPN`), never reads with `R` — so a message keeps
 appearing in every notice until you actually deal with it. That
 repetition is the point: the notice is a standing reminder, not an event
 log.
+
+Each run reports two things:
+
+- **Stale traffic** — the `LTN` messages `--days` or more days old, the
+  same cutoff [`export-stale`](stale-traffic.md#export-stale) uses.
+- **New private mail** — everything `LPN` lists. Nothing forwards these
+  on, so a private message sits on the node until the sysop deals with
+  it; it is reported the first time the notifier sees it, whatever its
+  age, rather than after `--days`. `SYSTEM Housekeeping Results` reports
+  are left out — [`clean-housekeeping`](clean-housekeeping.md) is the
+  action for those, and they would otherwise crowd out the real mail.
 
 ```bash
 python bpq_admin.py notify-stale mynode.example.com --user N0CALL --days 30
@@ -16,9 +27,9 @@ python bpq_admin.py notify-stale mynode.example.com --user N0CALL --days 30
 
 | Argument | Default | Description |
 |---|---|---|
-| `--days N` | `3` | Same staleness cutoff as [`export-stale`](stale-traffic.md#export-stale). |
-| `--heartbeat` | **on** | Send a notice even when nothing is stale, so a silent notifier can be told from a dead one. |
-| `--no-heartbeat` | — | Stay silent when nothing is stale. |
+| `--days N` | `3` | Same staleness cutoff as [`export-stale`](stale-traffic.md#export-stale). Traffic only — private mail is always reported. |
+| `--heartbeat` | **on** | Send a notice even when there is nothing to report, so a silent notifier can be told from a dead one. |
+| `--no-heartbeat` | — | Stay silent when there is nothing to report. |
 
 ## Channels
 
@@ -38,11 +49,26 @@ configured channel is an error rather than a silent skip:
 | `BPQ_SMTP_FROM` | Email | From address. |
 | `BPQ_SMTP_TO` | Email | Recipient(s), comma-separated. |
 
-The notice is the listing lines plus the total, truncated to whole lines
-with an `...and N more` marker where the channel demands it (Discord
-2000 chars, Telegram 4096); email always carries the full listing, making
-it the channel of record. With nothing stale the run still sends a
-header-only heartbeat notice by default (`0 stale traffic messages ...`);
+The notice carries both listings under their own headers and totals:
+
+```
+1 stale traffic message on mynode.example.com (older than 3 days)
+
+316    22-Aug TF     502 14424  @NTSNY  KC1KVY CANANDAIGUA 585 755
+
+2 new private messages on mynode.example.com (not forwarding)
+
+3309   31-Aug PN      22 W2QS   @W2QS   W2QS   test
+3310   01-Sep PN      44 KC1KVY @KC1KVY W2QS   qsl please
+```
+
+Where a channel demands it (Discord 2000 chars, Telegram 4096) the
+notice is truncated to whole lines with an `...and N more` marker —
+taken from the longer listing first, so a flood of stale traffic cannot
+squeeze the private mail out of the notice entirely. Email always
+carries both listings in full, making it the channel of record. With
+nothing to report the run still sends a headers-only heartbeat notice by
+default (`0 stale traffic messages ... 0 new private messages ...`);
 pass `--no-heartbeat` to stay quiet instead. A channel that fails to send is a WARNING
 in the log and makes the exit code 1 while the other channels still
 receive the notice — so cron surfaces the failure. The node link is

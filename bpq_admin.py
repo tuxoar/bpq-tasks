@@ -18,11 +18,13 @@ Actions:
     kill-exported       kill the messages whose msg_<id>.txt files sit in
                         an export directory (--dir), once they have been
                         processed; --dry-run lists them without connecting
-    notify-stale        list stale traffic (read-only, LTN) and send a
-                        notice - the listing lines and the total - to
-                        every notification channel configured in the
-                        environment: Discord webhook, Telegram bot,
-                        and/or SMTP email (see docs/stale-notifier-spec.md)
+    notify-stale        list stale traffic (LTN) and the new private
+                        messages nothing is forwarding on (LPN), and
+                        send a notice - the listing lines and the totals
+                        - to every notification channel configured in
+                        the environment: Discord webhook, Telegram bot,
+                        and/or SMTP email (see docs/stale-notifier-spec.md).
+                        Read-only on the BBS
     check-routing       inspect every LTN traffic message's To header;
                         one that does not look like 13743@NTSNY (US) or
                         B0W2J0@NTSNS (Canada) will not be routed
@@ -92,6 +94,10 @@ TRAFFIC_LINE_RE = re.compile(r"^\s*(\d+)\s+(\d{1,2})-([A-Za-z]{3})\s+T\S\s")
 TRAFFIC_FIELDS_RE = re.compile(
     r"^\s*(\d+)\s+\d{1,2}-[A-Za-z]{3}\s+T\S\s+\d+\s+(\S+)"
     r"(?:\s+(@\S+))?\s+(\S+)")
+
+# An LPN line for a private message (type P-something):
+#   3309   31-Aug PN      22 W2QS   @W2QS   W2QS   test
+PRIVATE_LINE_RE = re.compile(r"^\s*(\d+)\s+\d{1,2}-[A-Za-z]{3}\s+P\S\s")
 
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
@@ -500,6 +506,23 @@ def find_stale(session, days):
     return cutoff, stale
 
 
+def find_stuck_private(session):
+    """New private messages in LPN, as [(msg_id, listing_line), ...].
+    Nothing forwards these on - they sit on the BBS until the sysop
+    deals with them - so every one is worth a notice. SYSTEM
+    Housekeeping Results are left out: clean-housekeeping owns those,
+    and they would otherwise crowd out the real mail. Read-only."""
+    listing = session.bbs_command("LPN")
+    housekeeping = set(housekeeping_ids(listing))
+
+    stuck = []
+    for line in listing.splitlines():
+        m = PRIVATE_LINE_RE.match(line)
+        if m and int(m.group(1)) not in housekeeping:
+            stuck.append((int(m.group(1)), line.rstrip()))
+    return stuck
+
+
 def do_export_stale(session, args):
     cutoff, stale = find_stale(session, args.days)
     log.info("LTN: %d stale traffic message(s) dated on or before %s",
@@ -697,54 +720,60 @@ def send_email(cfg, subject, body_text):
         relay.send_message(message)
 
 
-def fit_notice(header, lines, limit):
-    """Header plus as many whole listing lines as fit within `limit`
-    characters, ending with an '...and N more' marker when truncated."""
-    if not lines:
-        return header
-    total = len(lines)
-    kept = list(lines)
-    text = "\n".join([header, ""] + kept)
-    while len(text) > limit and kept:
-        kept.pop()
-        text = "\n".join([header, ""] + kept
-                         + [f"...and {total - len(kept)} more"])
-    return text
-
-
-def discord_notice(header, lines, limit=2000):
-    """Discord rendering: listing in a code fence so columns align."""
-    if not lines:
-        return header
-    total = len(lines)
-    kept = list(lines)
+def render_notice(sections, limit, fence=False):
+    """Render (header, lines) sections - stale traffic, then stuck
+    private mail - into a notice of at most `limit` characters. When it
+    does not fit, whole listing lines are dropped from the longest
+    section, each shortened section ending with its own '...and N more'
+    marker, so neither kind of message can be silently squeezed out by
+    the other. `fence` wraps each listing in a Discord code fence."""
+    kept = [list(lines) for _, lines in sections]
     while True:
-        marker = [] if len(kept) == total else \
-            [f"...and {total - len(kept)} more"]
-        text = "\n".join([header, "```"] + kept + ["```"] + marker)
-        if len(text) <= limit or not kept:
+        blocks = []
+        for (header, lines), keep in zip(sections, kept):
+            block = [header]
+            if keep:
+                block += (["```"] + keep + ["```"]) if fence \
+                    else [""] + keep
+            if len(keep) != len(lines):
+                block.append(f"...and {len(lines) - len(keep)} more")
+            blocks.append("\n".join(block))
+        text = "\n\n".join(blocks)
+        longest = max(range(len(kept)), key=lambda i: len(kept[i]))
+        if len(text) <= limit or not kept[longest]:
             return text
-        kept.pop()
+        kept[longest].pop()
 
 
 def do_notify_stale(session, args):
     cutoff, stale = find_stale(session, args.days)
+    stuck = find_stuck_private(session)
     # Close the node link before any network sends - a slow webhook must
     # not hold the BBS session open.
     session.logout()
     session.close()
 
-    count = len(stale)
+    count, stuck_count = len(stale), len(stuck)
     log.info("LTN: %d stale traffic message(s) dated on or before %s",
              count, cutoff)
-    if not stale and not args.heartbeat:
-        print("0 stale traffic messages - nothing to send")
+    log.info("LPN: %d new private message(s) not forwarding", stuck_count)
+    if not stale and not stuck and not args.heartbeat:
+        print("0 stale traffic messages, 0 new private messages - "
+              "nothing to send")
         return 0
 
     plural = "" if count == 1 else "s"
-    header = (f"{count} stale traffic message{plural} on {args.host} "
-              f"(older than {args.days} days)")
-    lines = [line for _, line in stale]
+    stuck_plural = "" if stuck_count == 1 else "s"
+    summary = (f"{count} stale traffic message{plural}, "
+               f"{stuck_count} new private message{stuck_plural}")
+    sections = [
+        (f"{count} stale traffic message{plural} on {args.host} "
+         f"(older than {args.days} days)",
+         [line for _, line in stale]),
+        (f"{stuck_count} new private message{stuck_plural} on {args.host} "
+         f"(not forwarding)",
+         [line for _, line in stuck]),
+    ]
 
     failures = []
     for name, cfg in args.channels:
@@ -752,25 +781,24 @@ def do_notify_stale(session, args):
         log.info("sending notice to %s", name)
         try:
             if name == "discord":
-                send_discord(cfg["webhook"], discord_notice(header, lines))
+                send_discord(cfg["webhook"],
+                             render_notice(sections, 2000, fence=True))
             elif name == "telegram":
                 send_telegram(cfg["token"], cfg["chat"],
-                              fit_notice(header, lines, 4096))
+                              render_notice(sections, 4096))
             else:
-                send_email(cfg,
-                           f"[BPQ] {count} stale traffic message{plural} "
-                           f"on {args.host}",
-                           fit_notice(header, lines, sys.maxsize))
+                send_email(cfg, f"[BPQ] {summary} on {args.host}",
+                           render_notice(sections, sys.maxsize))
         except (OSError, RuntimeError, ValueError) as exc:
             failures.append(name)
             log.warning("notice to %s failed: %s", name, exc)
             print(f"notice to {name} FAILED: {exc}", file=sys.stderr)
         else:
-            log.info("notice sent to %s (%d message(s))", name, count)
+            log.info("notice sent to %s (%s)", name, summary)
             print(f"notice sent to {name}")
 
     print(f"sent to {len(args.channels) - len(failures)} of "
-          f"{len(args.channels)} channel(s); {count} stale message{plural}")
+          f"{len(args.channels)} channel(s); {summary}")
     return 1 if failures else 0
 
 
@@ -852,18 +880,20 @@ def build_parser():
                             "without connecting to the node")
     notify = sub.add_parser(
         "notify-stale", parents=[common],
-        help="send a stale-traffic notice to the Discord/Telegram/email "
-             "channels configured in the environment")
+        help="send a stale-traffic and stuck-private-mail notice to the "
+             "Discord/Telegram/email channels configured in the "
+             "environment")
     notify.add_argument("--days", type=positive_int, default=3, metavar="N",
-                        help="a message N or more days old is stale "
-                             "(default 3)")
+                        help="a traffic message N or more days old is stale "
+                             "(default 3); private mail is reported as soon "
+                             "as it appears, whatever its age")
     notify.add_argument("--heartbeat", action="store_true", default=True,
-                        help="send a notice even when nothing is stale, so "
-                             "a silent notifier can be told from a dead one "
-                             "(default: on)")
+                        help="send a notice even when there is nothing to "
+                             "report, so a silent notifier can be told from "
+                             "a dead one (default: on)")
     notify.add_argument("--no-heartbeat", dest="heartbeat",
                         action="store_false",
-                        help="stay silent when nothing is stale")
+                        help="stay silent when there is nothing to report")
     check = sub.add_parser(
         "check-routing", parents=[common],
         help="report LTN traffic messages whose To header will not route "

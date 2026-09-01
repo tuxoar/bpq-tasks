@@ -30,7 +30,7 @@ on Windows, macOS, and Linux.
 | [`run-reports`](docs/run-reports.md) | Run `LT` and report the traffic messages in a date range: the matching lines, then the starting message number, ending message number, and total. |
 | [`export-stale`](docs/stale-traffic.md#export-stale) | Find traffic messages older than a cutoff, read each one, and save them to a timestamped folder — one file per message plus an index. |
 | [`kill-exported`](docs/stale-traffic.md#kill-exported) | Kill the messages named by an export folder — the cleanup step once those messages have been delivered. Supports `--dry-run`. |
-| [`notify-stale`](docs/notify-stale.md) | List stale traffic (read-only) and send a notice to every Discord webhook, Telegram bot, and/or email relay configured in the environment. Built for a scheduled run. |
+| [`notify-stale`](docs/notify-stale.md) | List stale traffic and the new private mail nothing is forwarding on (read-only), and send a notice to every Discord webhook, Telegram bot, and/or email relay configured in the environment. Built for a scheduled run. |
 | [`check-routing`](docs/check-routing.md) | Report every traffic message whose To header will not route (`13743@NTSNY` / `B0W2J0@NTSNS` are proper forms), optionally audited by sender. Read-only; exit 1 when anything is flagged. |
 
 [`extract_emails.py`](docs/extract-emails.md) then reads an exported
@@ -70,7 +70,8 @@ default. See [Configuration](docs/configuration.md).
 - [Recovering email addresses](docs/extract-emails.md) — `extract_emails.py`,
   printing the letters, QRZ credentials and limits.
 - [Stale-traffic notices](docs/notify-stale.md) — `notify-stale` on a
-  schedule; channel setup detail in the [notifier spec](docs/stale-notifier-spec.md).
+  schedule, covering stale traffic and stuck private mail; channel setup
+  detail in the [notifier spec](docs/stale-notifier-spec.md).
 - [Routing checks](docs/check-routing.md) — `check-routing` and the
   per-sender audit.
 - [Logging, output, and exit codes](docs/logging.md)
