@@ -5,6 +5,9 @@
 stale-*/
 exports/
 
+# Node backups - contain node passwords, bpq.env, VARA license, real mail
+backups/
+
 # Local credential files (sourced env files hold the node password)
 *.env
 *.env.ps1
