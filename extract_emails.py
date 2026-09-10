@@ -7,9 +7,12 @@ and CW relay, e.g.
 
     BOBLANGE01 ATSIGN ICLOUD DOT COM
     M DOT E DOT PIATTI AT SIGN GMAIL DOT COM
+    LEIGHMARIS ATSIGN HOTMAIL
 
 This walks a directory of msg_*.txt exports, decodes those spellings back
-into normal addresses, and prints one row per message. For every message
+into normal addresses, and prints one row per message. A well-known mail
+provider with the TLD left implied (the HOTMAIL above) gets its full
+domain filled in (hotmail.com). For every message
 that has an address it also writes a ready-to-send email block (To,
 Subject, body text, then the radiogram stripped of BBS headers, routing
 traces and the export footer) into one file, emails.txt in the export
@@ -17,7 +20,10 @@ directory by default. When the traffic and QRZ give different addresses,
 the To line carries both. Messages with no address at all instead each
 get a printable letter file (letters/letter_<id>.txt in the export
 directory) for delivery by postal mail - the radiogram's address block
-carries the street address.
+carries the street address. A letter left over from an earlier run whose
+message has since gained an address is offered for deletion - after
+asking for confirmation, so nothing is removed without a yes (or at all
+when there is no terminal to ask on).
 
 The addressee is the first line of the address block, which follows the
 preamble line, e.g.
@@ -76,10 +82,15 @@ TRACE_RE = re.compile(r"^\s*R:\d")
 
 END_RE = re.compile(r"^\s*\[End of Message")
 
-# Preamble: optional NR, message number, precedence, then the rest.
+# Preamble: optional NR, message number, then the precedence - or, when the
+# precedence is left implied (Routine), the handling code or the station of
+# origin's callsign directly.
 #   NR 751221 R HXCF 11 W2PAX ARL 15 NAPLES FL JULY 7
 #   3870 R HXC W2PAX ARL 24 NAPLES FL JUL 5
-PREAMBLE_RE = re.compile(r"^\s*(?:NR\s+)?\d+\s+[RWPE]\b", re.IGNORECASE)
+#   NR 0002 KD2KUB 15 CAMILLUS NY Aug 29
+PREAMBLE_RE = re.compile(
+    r"^\s*(?:NR\s+)?\d+\s+(?:[RWPE]\b|HX[A-G]\b|[A-Z]{1,2}[0-9][A-Z]{1,4}\b)",
+    re.IGNORECASE)
 
 # Prosigns and separators that can sit between the preamble and the address.
 SEPARATOR_RE = re.compile(r"^\s*(BT|AR|NNNN|AA)?\s*$", re.IGNORECASE)
@@ -112,6 +123,44 @@ ADDRESS_RE = re.compile(
 
 # Pseudo-TLDs from the packet radio hierarchical addressing scheme.
 BBS_TLDS = {"noam", "usa", "eura", "asia", "soam", "afri", "aunz", "mdrs", "ampr"}
+
+# Like ADDRESS_RE but with a bare word for the domain, for spellings that
+# leave the TLD implied: "LEIGHMARIS ATSIGN HOTMAIL". Only accepted when
+# the word is a mail provider from IMPLIED_DOMAINS.
+BARE_ADDRESS_RE = re.compile(
+    r"(?<![\w.@+-])"
+    r"([A-Za-z0-9][A-Za-z0-9._%+-]*)"
+    r"\s*@\s*"
+    r"([A-Za-z]{2,24})"
+    r"(?![\w.@-])"
+)
+
+# The full domain each of those provider names implies. Mostly ".com",
+# but not always (comcast.net, arrl.net, ...).
+IMPLIED_DOMAINS = {
+    name: name + ".com"
+    for name in ("gmail", "googlemail", "hotmail", "yahoo", "aol", "icloud",
+                 "outlook", "msn", "live", "mac", "me", "protonmail", "juno",
+                 "frontier", "mail", "fastmail", "zoho", "rocketmail", "gmx")
+}
+IMPLIED_DOMAINS.update({
+    "proton": "proton.me",
+    "comcast": "comcast.net",
+    "xfinity": "xfinity.com",
+    "verizon": "verizon.net",
+    "att": "att.net",
+    "sbcglobal": "sbcglobal.net",
+    "bellsouth": "bellsouth.net",
+    "earthlink": "earthlink.net",
+    "netzero": "netzero.net",
+    "charter": "charter.net",
+    "spectrum": "spectrum.net",
+    "cox": "cox.net",
+    "optonline": "optonline.net",
+    "windstream": "windstream.net",
+    "centurylink": "centurylink.net",
+    "arrl": "arrl.net",
+})
 
 EMAIL_INTRO = (
     "The message(s) below was received for you via the Digital National "
@@ -155,10 +204,17 @@ def find_address(lines):
     for line in lines:
         if "@" not in line and not re.search(r"\bAT\b|\bATSIGN\b", line, re.IGNORECASE):
             continue
-        for match in ADDRESS_RE.finditer(decode(line)):
+        decoded = decode(line)
+        for match in ADDRESS_RE.finditer(decoded):
             local, domain = match.group(1), match.group(2)
             if plausible(local, domain):
                 return f"{local}@{domain}".lower()
+        # No complete address on the line - a known provider with the TLD
+        # left implied ("LEIGHMARIS ATSIGN HOTMAIL") still counts.
+        for match in BARE_ADDRESS_RE.finditer(decoded):
+            domain = IMPLIED_DOMAINS.get(match.group(2).lower())
+            if domain:
+                return f"{match.group(1)}@{domain}".lower()
     return None
 
 
@@ -375,6 +431,35 @@ def build_letter(callsign, content):
     ])
 
 
+def clear_stale_letters(letters_dir, current_ids):
+    """Offer to delete letters left over from an earlier run, i.e. any
+    letter_<id>.txt whose message is no longer address-less (typically
+    because a later run recovered an address for it). Deletion needs the
+    user's go-ahead, so without a terminal to ask on the files are only
+    reported, never removed."""
+    if not os.path.isdir(letters_dir):
+        return
+    stale = sorted(
+        name for name in os.listdir(letters_dir)
+        if re.fullmatch(r"letter_\d+\.txt", name)
+        and re.search(r"\d+", name).group() not in current_ids)
+    if not stale:
+        return
+    print(f"{len(stale)} stale letter(s) in {os.path.abspath(letters_dir)} "
+          "for messages that now have an address:")
+    for name in stale:
+        print(f"    {name}")
+    if not sys.stdin.isatty():
+        print("not deleting (no terminal to confirm on)", file=sys.stderr)
+        return
+    if input("delete them? [y/N] ").strip().lower() in ("y", "yes"):
+        for name in stale:
+            os.remove(os.path.join(letters_dir, name))
+        print(f"{len(stale)} letter(s) deleted")
+    else:
+        print("letters kept")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -481,6 +566,7 @@ def main():
             if not args.quiet:
                 print(f"{len(no_address)} letter(s) for messages without an "
                       f"address written to {os.path.abspath(letters_dir)}")
+        clear_stale_letters(letters_dir, {msg_id for msg_id, _ in no_address})
 
 
 if __name__ == "__main__":

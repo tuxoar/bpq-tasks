@@ -9,11 +9,14 @@ spell email addresses out phonetically so they survive voice and CW relay:
 BOBLANGE01 ATSIGN ICLOUD DOT COM
 M DOT E DOT PIATTI AT SIGN GMAIL DOT COM
 N2WLH AT YAHOO DOT COM
+LEIGHMARIS ATSIGN HOTMAIL
 ```
 
 `extract_emails.py` reads an [`export-stale`](stale-traffic.md) folder,
 decodes those spellings back into ordinary addresses, and looks up
-anything missing on QRZ.com:
+anything missing on QRZ.com. When a well-known mail provider is spelled
+with the TLD left implied (the `HOTMAIL` above), the full domain is
+filled in (`leighmaris@hotmail.com`):
 
 ```bash
 # Parse the messages only - no network, no credentials needed
@@ -78,7 +81,11 @@ emails but with no To/Subject header, ready to print and mail (see
 radiogram's address block carries the recipient's street address, so the
 printout itself tells you how to address the envelope. Every message in
 the export therefore ends up in exactly one place: `emails.txt` if an
-address was found, `letters/` if not.
+address was found, `letters/` if not. Letters are not silently deleted:
+when a re-run finds leftover letters for messages that have since gained
+an address (say a parsing fix recovered the callsign), it lists them and
+asks before removing them — and with no terminal to ask on it only
+reports them.
 
 **Who the address belongs to.** The addressee is the first line of the
 address block, which follows the preamble:
@@ -90,7 +97,9 @@ MICHAEL PIATTI  N2MEP                               <- addressee
 
 so the trailing callsign on that line (`N2MEP`) is the recipient. The
 callsign in the preamble is the *originating* station (`W2PAX` here) and is
-never used for lookups.
+never used for lookups. A preamble that omits the precedence letter, so the
+originating callsign follows the number directly (`NR 0002 KD2KUB 15
+CAMILLUS NY Aug 29`), is recognized too.
 
 **Every recipient is looked up, including those whose message already
 carried an address.** That is deliberate: it surfaces the case where QRZ
