@@ -295,12 +295,10 @@ class Qrz:
                   file=sys.stderr)
         return session["Key"]
 
-    def email(self, callsign):
-        """The published email address for a callsign, or None.
-
-        Returns None both when QRZ has no record and when the record has no
-        public email; the two are distinguished on stderr.
-        """
+    def record(self, callsign):
+        """The full QRZ Callsign record for a callsign as a field dict
+        (fname, name, addr1, addr2, state, zip, email, ...), or None
+        when QRZ has no record."""
         if callsign in self.cache:
             return self.cache[callsign]
         root = self._get({"s": self.key, "callsign": callsign})
@@ -311,9 +309,17 @@ class Qrz:
                 self.cache[callsign] = None
                 return None
             raise QrzError(error)
-        address = self._fields(root, "Callsign").get("email") or None
-        self.cache[callsign] = address.lower() if address else None
+        self.cache[callsign] = self._fields(root, "Callsign")
         return self.cache[callsign]
+
+    def email(self, callsign):
+        """The published email address for a callsign, or None.
+
+        Returns None both when QRZ has no record and when the record has no
+        public email; the two are distinguished on stderr.
+        """
+        address = (self.record(callsign) or {}).get("email") or None
+        return address.lower() if address else None
 
 
 # ------------------------------------------------------------------ main

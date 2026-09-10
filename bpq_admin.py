@@ -18,6 +18,16 @@ Actions:
     kill-exported       kill the messages whose msg_<id>.txt files sit in
                         an export directory (--dir), once they have been
                         processed; --dry-run lists them without connecting
+    list-hxc            scan the msg_<id>.txt files in an export directory
+                        (--dir) for radiogram preambles carrying an HXC
+                        handling instruction - the originator asked for a
+                        delivery confirmation - write the radiogram
+                        numbers, grouped by originating station, to a text
+                        file, and generate a confirmation radiogram draft
+                        per station in hxc_replies/, with each station's
+                        name/address/email filled in from the QRZ.com XML
+                        API (QRZ_USER/QRZ_PASSWORD or --qrz-user; --no-qrz
+                        leaves placeholders). Never connects to the node
     notify-stale        list stale traffic (LTN) and the new private
                         messages nothing is forwarding on (LPN), and
                         send a notice - the listing lines and the totals
@@ -54,6 +64,7 @@ import getpass
 import json
 import logging
 import os
+import random
 import re
 import smtplib
 import socket
@@ -98,6 +109,25 @@ TRAFFIC_FIELDS_RE = re.compile(
 # An LPN line for a private message (type P-something):
 #   3309   31-Aug PN      22 W2QS   @W2QS   W2QS   test
 PRIVATE_LINE_RE = re.compile(r"^\s*(\d+)\s+\d{1,2}-[A-Za-z]{3}\s+P\S\s")
+
+# A radiogram preamble carrying an HX handling instruction, inside an
+# exported message body:
+#   3962 R HXC W2PAX ARL 24 NAPLES FL AUG 29
+#   363 R HXC WX2DX 10 STORMSTOWN PA 0152Z AUG 12
+# number, precedence, the HX group(s) - codes A-G, combined as in HXCG
+# or written separately as in "HXC HXG", an HXA/HXB figure allowed -
+# then the station of origin.
+HX_PREAMBLE_RE = re.compile(
+    r"^\s*(\d+)\s+(?:TEST\s+)?(?:EMERGENCY|[RPW])\s+"
+    r"(HX[A-G]+\d*(?:\s+HX[A-G]+\d*)*)\s+"
+    r"([A-Z0-9]+(?:/[A-Z0-9]+)*)\b[^\n]*",
+    re.IGNORECASE | re.MULTILINE)
+
+# The station of origin, place of origin, and signature stamped on the
+# HXC delivery-confirmation drafts that list-hxc generates.
+REPLY_ORIGIN = "W2QS"
+REPLY_PLACE = "DEANSBORO NY"
+REPLY_SIGNATURE = "Shaun W2QS DTN 2RN SYSOP"
 
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
@@ -433,6 +463,167 @@ def do_kill_exported(session, args):
     print(f"killed {len(ids) - len(failures)} of {len(ids)} "
           f"exported messages")
     return 1 if failures else 0
+
+
+def find_hxc(directory):
+    """Scan the msg_<id>.txt files in an export directory for radiogram
+    preambles whose HX group contains C - the originator asked for a
+    delivery confirmation. Returns [(bbs_id, radiogram_nr, hx, origin,
+    preamble_line), ...] sorted by BBS message id."""
+    found = []
+    for bbs_id in exported_ids(directory):
+        path = os.path.join(directory, f"msg_{bbs_id}.txt")
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                body = f.read()
+        except OSError as exc:
+            raise RuntimeError(f"cannot read {path}: {exc}")
+        for m in HX_PREAMBLE_RE.finditer(body):
+            hx = m.group(2).upper()
+            if "C" in hx[2:]:
+                found.append((bbs_id, int(m.group(1)), hx,
+                              m.group(3).upper(),
+                              m.group(0).strip()))
+    return found
+
+
+def hxc_reply_text(nr, origin, numbers, today, contact):
+    """A delivery-confirmation radiogram draft for one originating
+    station: their radiogram `numbers` were delivered via email today,
+    headed by the BBS filing lines (TO: zip@NTS<state>, SUBJECT: city
+    and callsign). `contact` is a qrz_contact() dict; unknown fields
+    fall back to fill-in placeholders, except the email line, which is
+    dropped - the preamble only carries the callsign."""
+    date = f"{today.strftime('%b').upper()} {today.day}"
+    now = time.localtime()
+    zone = "EDT" if now.tm_isdst else "EST"
+    if contact.get("zip") and contact.get("state"):
+        # A zip+4 or a spaced Canadian postal code would not route
+        # (see check-routing): keep the 5-digit zip / packed code only.
+        code = contact["zip"].split("-")[0].replace(" ", "")
+        route = f"{code}@NTS{contact['state']}"
+    else:
+        route = "<ZIPCODE>@NTS<ST>"
+    text = [f"YOUR MSG {' '.join(str(n) for n in numbers)}",
+            f"delivered via email on {date} "
+            f"{time.strftime('%H%M', now)} {zone}"]
+    check = sum(len(line.split()) for line in text)
+    # No email line at all when QRZ has none - not a placeholder.
+    return ("\n".join(
+        [f"TO: {route}",
+         f"SUBJECT: {contact.get('city') or '<CITY>'} {origin}",
+         f"NR {nr} R {REPLY_ORIGIN} {check} {REPLY_PLACE} {date}",
+         f"{contact.get('name') or '<FULL NAME>'} {origin}",
+         contact.get("address") or "<ONE LINE ADDRESS>"]
+        + ([contact["email"]] if contact.get("email") else [])
+        + ["BT"] + text + ["BT", REPLY_SIGNATURE]) + "\n").upper()
+
+
+def qrz_contact(qrz, callsign):
+    """Addressee details for a callsign from its QRZ record: a dict of
+    name, address (one line), email, city, state, and zip - each None
+    when QRZ does not carry it. (QRZ's addr2 field is the city.)"""
+    record = qrz.record(callsign) or {}
+    fields = {key: (record.get(key) or "").strip() or None
+              for key in ("fname", "name", "addr1", "addr2", "state",
+                          "zip", "email")}
+    name = " ".join(p for p in (fields["fname"], fields["name"]) if p)
+    address = " ".join(p for p in (fields["addr1"], fields["addr2"],
+                                   fields["state"], fields["zip"]) if p)
+    return {"name": name or None, "address": address or None,
+            "email": fields["email"], "city": fields["addr2"],
+            "state": fields["state"], "zip": fields["zip"]}
+
+
+def do_list_hxc(args):
+    """Never connects to the node; only the export directory is read
+    and the addressee details are fetched from QRZ."""
+    rows = find_hxc(args.export_dir)
+    scanned = len(exported_ids(args.export_dir))
+    log.info("list-hxc: %d HXC radiogram(s) in the %d message file(s) "
+             "under %s", len(rows), scanned, args.export_dir)
+    if not rows:
+        print(f"no HXC radiograms in the {scanned} message file(s) "
+              f"under {args.export_dir}")
+        return 0
+
+    # The service reply goes to the originating station and quotes the
+    # originator's radiogram number, so group the numbers by origin.
+    by_origin = {}
+    for _, nr, _, origin, _ in rows:
+        by_origin.setdefault(origin, set()).add(nr)
+
+    out_path = args.out or os.path.join(args.export_dir, "hxc_list.txt")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(f"radiograms requesting a delivery confirmation (HXC), "
+                f"found in {args.export_dir}, generated {dt.date.today()}\n"
+                f"\nradiogram numbers by originating station:\n")
+        for origin in sorted(by_origin):
+            f.write(f"  {origin}: "
+                    + " ".join(str(n) for n in sorted(by_origin[origin]))
+                    + "\n")
+        f.write("\ndetail (BBS message, preamble):\n")
+        for bbs_id, _, _, _, line in rows:
+            f.write(f"  msg_{bbs_id}  {line}\n")
+
+    # The addressee details come from QRZ; the preamble only carries
+    # the callsign. Shares extract_emails.py's client and credentials.
+    qrz = None
+    if not args.no_qrz:
+        try:
+            import extract_emails
+        except ImportError:
+            raise RuntimeError(
+                "QRZ lookups need extract_emails.py next to bpq_admin.py "
+                "(or run with --no-qrz)")
+        password = args.qrz_password or getpass.getpass(
+            f"QRZ password for {args.qrz_user}: ")
+        try:
+            qrz = extract_emails.Qrz(args.qrz_user, password)
+        except extract_emails.QrzError as exc:
+            raise RuntimeError(f"QRZ login failed: {exc}")
+
+    # One confirmation draft per originating station. Distinct random
+    # message numbers, so two drafts from the same run never collide.
+    replies_dir = os.path.join(args.export_dir, "hxc_replies")
+    os.makedirs(replies_dir, exist_ok=True)
+    today = dt.date.today()
+    reply_nrs = random.sample(range(10000, 100000), len(by_origin))
+    incomplete = []
+    for nr, origin in zip(reply_nrs, sorted(by_origin)):
+        contact = {}
+        if qrz:
+            try:
+                contact = qrz_contact(qrz, origin)
+            except extract_emails.QrzError as exc:
+                log.warning("list-hxc: QRZ lookup of %s failed: %s",
+                            origin, exc)
+                print(f"warning: QRZ lookup of {origin} failed: {exc}",
+                      file=sys.stderr)
+        # A missing email drops its line entirely; any other missing
+        # field leaves a placeholder to fill in.
+        if not all(contact.get(k)
+                   for k in ("name", "address", "city", "state", "zip")):
+            incomplete.append(origin)
+        # Windows-safe: a portable call like W2PAX/4 must not become a path.
+        path = os.path.join(replies_dir,
+                            f"reply_{origin.replace('/', '-')}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(hxc_reply_text(nr, origin, sorted(by_origin[origin]),
+                                   today, contact))
+        log.info("list-hxc: wrote confirmation draft %s", path)
+
+    for origin in sorted(by_origin):
+        print(f"{origin}: "
+              + " ".join(str(n) for n in sorted(by_origin[origin])))
+    log.info("list-hxc: wrote %s", out_path)
+    print(f"{len(rows)} HXC radiogram(s) from {len(by_origin)} station(s) "
+          f"written to {out_path}")
+    print(f"{len(by_origin)} confirmation draft(s) written to {replies_dir}")
+    if incomplete:
+        print("placeholders left to fill in by hand: "
+              + " ".join(incomplete))
+    return 0
 
 
 def do_run_reports(session, args):
@@ -878,6 +1069,29 @@ def build_parser():
     killx.add_argument("--dry-run", action="store_true",
                        help="print the message IDs that would be killed, "
                             "without connecting to the node")
+    hxc = sub.add_parser(
+        "list-hxc", parents=[common],
+        help="list the exported radiograms that ask for a delivery "
+             "confirmation (HXC), grouped by originating station, and "
+             "draft a confirmation per station (addressee filled in "
+             "from QRZ); never connects to the node")
+    hxc.add_argument("--dir", dest="export_dir", required=True,
+                     metavar="DIR",
+                     help="export directory containing the msg_<id>.txt "
+                          "files to scan")
+    hxc.add_argument("--out", default=None, metavar="FILE",
+                     help="write the list to this file (default: "
+                          "hxc_list.txt inside --dir)")
+    hxc.add_argument("--qrz-user", default=os.environ.get("QRZ_USER"),
+                     help="QRZ.com username, for filling each draft's "
+                          "name/address/email (or set QRZ_USER)")
+    hxc.add_argument("--qrz-password",
+                     default=os.environ.get("QRZ_PASSWORD"),
+                     help="QRZ.com password (or set QRZ_PASSWORD; prompted "
+                          "for if a user is given without one)")
+    hxc.add_argument("--no-qrz", action="store_true",
+                     help="skip QRZ lookups and leave the name/address/"
+                          "email placeholders in each draft")
     notify = sub.add_parser(
         "notify-stale", parents=[common],
         help="send a stale-traffic and stuck-private-mail notice to the "
@@ -940,6 +1154,19 @@ def main():
         if args.dry_run:
             print("would kill: " + " ".join(str(i) for i in ids))
             return 0
+    if args.action == "list-hxc":
+        # Never touches the node: scan, ask QRZ for the addressees,
+        # write the list and drafts, and return before any node
+        # connection value is required.
+        if not args.no_qrz and not args.qrz_user:
+            parser.error("no QRZ credentials: set QRZ_USER (and "
+                         "QRZ_PASSWORD), pass --qrz-user, or run with "
+                         "--no-qrz")
+        setup_logging(args.log_file)
+        try:
+            return do_list_hxc(args)
+        except RuntimeError as exc:
+            parser.error(str(exc))
     if args.action == "check-routing":
         pattern = args.pattern or DEFAULT_ROUTE_PATTERN
         try:

@@ -15,8 +15,11 @@ python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
 ```
 
 The middle step is `extract_emails.py`, documented on its own page:
-[Recovering email addresses](extract-emails.md). For unattended monitoring
-*between* delivery passes, see [`notify-stale`](notify-stale.md).
+[Recovering email addresses](extract-emails.md). Before killing the
+exported messages, run [`list-hxc`](list-hxc.md) on the folder to catch
+the radiograms whose originators asked for a delivery confirmation. For
+unattended monitoring *between* delivery passes, see
+[`notify-stale`](notify-stale.md).
 
 ## `export-stale`
 
