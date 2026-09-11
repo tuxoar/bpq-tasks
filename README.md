@@ -2,7 +2,7 @@
 
 Command-line administration tooling for a [BPQ32/LinBPQ](https://www.cantab.net/users/john.wiseman/Documents/) packet-radio node.
 
-Three scripts:
+Four scripts:
 
 - **`bpq_admin.py`** connects to your node's telnet port, logs in, enters
   the BBS, performs one action, and logs out cleanly — so routine chores
@@ -18,6 +18,10 @@ Three scripts:
   and sends a Telegram alert when no one has connected within a
   threshold window (default 90 minutes) — one alert per gap, built for
   a cron cadence. See [BBS activity alert](docs/bbs-activity.md).
+- **`check_node_health.py`** runs on the node itself and sends a
+  Telegram alert when linbpq, VARA, or Dire Wolf stops running or logs
+  errors — soundcard failures especially. See
+  [Node health alert](docs/node-health.md).
 
 All are single Python files with **no dependencies**. The first two run
 unmodified on Windows, macOS, and Linux; `check_bbs_activity.py` also
