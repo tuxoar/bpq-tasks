@@ -2,7 +2,7 @@
 
 Command-line administration tooling for a [BPQ32/LinBPQ](https://www.cantab.net/users/john.wiseman/Documents/) packet-radio node.
 
-Two scripts:
+Three scripts:
 
 - **`bpq_admin.py`** connects to your node's telnet port, logs in, enters
   the BBS, performs one action, and logs out cleanly — so routine chores
@@ -14,9 +14,14 @@ Two scripts:
   text and, optionally, from [QRZ.com](https://www.qrz.com) — then writes
   a ready-to-send email for each message it finds an address for, and a
   printable letter for postal delivery for each message it doesn't.
+- **`check_bbs_activity.py`** watches the node's live BBS log over SSH
+  and sends a Telegram alert when no one has connected within a
+  threshold window (default 90 minutes) — one alert per gap, built for
+  a cron cadence. See [BBS activity alert](docs/bbs-activity.md).
 
-Both are single Python files with **no dependencies**, and run unmodified
-on Windows, macOS, and Linux.
+All are single Python files with **no dependencies**. The first two run
+unmodified on Windows, macOS, and Linux; `check_bbs_activity.py` also
+needs an `ssh` client on the PATH (or `--local` on the node itself).
 
 ## What it can do
 
