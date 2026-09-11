@@ -217,6 +217,11 @@ def main(argv=None):
         help="file remembering the gap already alerted on "
              f"(default: {DEFAULT_STATE})")
     parser.add_argument(
+        "--heartbeat", action="store_true",
+        help="always send the current status - when the last connect was - "
+             "even when no alert would fire; ignores the state file, so "
+             "schedule it on its own (less frequent) cron line")
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="print the alert instead of sending it; never touches state")
     args = parser.parse_args(argv)
@@ -270,8 +275,19 @@ def main(argv=None):
     idle = when is None or age > args.minutes
 
     if not idle:
-        print(f"OK: last connect {call} {age} min ago "
-              f"(at {when:%Y-%m-%d %H:%M} {zone})")
+        status = (f"last connect {call} {age} min ago "
+                  f"(at {when:%Y-%m-%d %H:%M} {zone})")
+        if args.heartbeat:
+            text = (f"BBS heartbeat on {where}: {status}; within the "
+                    f"{args.minutes}-minute window.")
+            if args.dry_run:
+                print("DRY RUN - would send:")
+                print(text)
+            else:
+                send_telegram(token, chat, text)
+                print("heartbeat sent: " + text)
+        else:
+            print("OK: " + status)
         if os.path.exists(state_path):
             os.remove(state_path)
         return 0
@@ -288,6 +304,11 @@ def main(argv=None):
     if args.dry_run:
         print("DRY RUN - would send:")
         print(message)
+        return 1
+
+    if args.heartbeat:
+        send_telegram(token, chat, message)
+        print("heartbeat sent: " + message)
         return 1
 
     already = ""

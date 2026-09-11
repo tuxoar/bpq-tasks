@@ -56,6 +56,7 @@ Options:
 | `--log PATH` | Log path (default `linbpq/logLatest_BBS.txt`, relative to the remote home). |
 | `--local` | Read the log from this machine — for running on the node itself. |
 | `--state PATH` | Where the sent-alert marker lives. |
+| `--heartbeat` | Always send the current status — when the last connect was — even when no alert would fire. Skips the once-per-gap suppression, so give it its own, less frequent cron line. |
 | `--dry-run` | Print the would-be alert; sends nothing, touches no state. |
 
 Exit status: `0` when the BBS is active, `1` when idle past the
@@ -71,6 +72,13 @@ Every 15 minutes from the workstation:
 
 To run it on the node instead, copy the script there, set the two
 Telegram variables in the node's crontab, and add `--local`.
+
+A daily heartbeat alongside the alert schedule — a morning message that
+says when the last connect was, whether or not anything is wrong:
+
+```cron
+0 8 * * * . "$HOME/bpq-tasks/bpq.env" && python3 "$HOME/bpq-tasks/check_bbs_activity.py" --local --heartbeat >> "$HOME/bpq-tasks/bpq_admin.log" 2>&1
+```
 
 ## Testing
 
