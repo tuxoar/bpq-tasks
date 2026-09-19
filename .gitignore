@@ -4,6 +4,7 @@
 # Exported messages - contain real traffic (names, addresses, phone numbers)
 stale-*/
 exports/
+delivered.txt
 
 # Node backups - contain node passwords, bpq.env, VARA license, real mail
 backups/
