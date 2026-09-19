@@ -2,7 +2,7 @@
 
 Command-line administration tooling for a [BPQ32/LinBPQ](https://www.cantab.net/users/john.wiseman/Documents/) packet-radio node.
 
-Four scripts:
+Five scripts:
 
 - **`bpq_admin.py`** connects to your node's telnet port, logs in, enters
   the BBS, performs one action, and logs out cleanly — so routine chores
@@ -14,6 +14,10 @@ Four scripts:
   text and, optionally, from [QRZ.com](https://www.qrz.com) — then writes
   a ready-to-send email for each message it finds an address for, and a
   printable letter for postal delivery for each message it doesn't.
+- **`deliver_emails.py`** takes those ready-to-send emails and creates them
+  in your mailbox as drafts — or sends them — through Proton Mail Bridge or
+  any other IMAP/SMTP server, so nothing has to be copy-pasted into a mail
+  client. See [Delivering the emails](docs/deliver-emails.md).
 - **`check_bbs_activity.py`** watches the node's live BBS log over SSH
   and sends a Telegram alert when no one has connected within a
   threshold window (default 90 minutes) — one alert per gap, built for
@@ -23,9 +27,11 @@ Four scripts:
   errors — soundcard failures especially. See
   [Node health alert](docs/node-health.md).
 
-All are single Python files with **no dependencies**. The first two run
-unmodified on Windows, macOS, and Linux; `check_bbs_activity.py` also
-needs an `ssh` client on the PATH (or `--local` on the node itself).
+All are single Python files with **no dependencies**. The first three run
+unmodified on Windows, macOS, and Linux (`deliver_emails.py` needs Proton
+Mail Bridge, or another IMAP/SMTP server, to talk to);
+`check_bbs_activity.py` also needs an `ssh` client on the PATH (or
+`--local` on the node itself).
 
 ## What it can do
 
@@ -45,7 +51,9 @@ needs an `ssh` client on the PATH (or `--local` on the node itself).
 
 [`extract_emails.py`](docs/extract-emails.md) then reads an exported
 folder, decodes the phonetically-spelled addresses, looks up the rest on
-QRZ, and writes `emails.txt` plus printable letters.
+QRZ, and writes `emails.txt` plus printable letters;
+[`deliver_emails.py`](docs/deliver-emails.md) turns `emails.txt` into
+drafts in your mailbox, or sends them.
 
 ## Quick start
 
@@ -81,6 +89,8 @@ default. See [Configuration](docs/configuration.md).
   handling instruction.
 - [Recovering email addresses](docs/extract-emails.md) — `extract_emails.py`,
   printing the letters, QRZ credentials and limits.
+- [Delivering the emails](docs/deliver-emails.md) — `deliver_emails.py`,
+  Proton Mail Bridge setup, drafts vs `--send`, the delivery ledger.
 - [Stale-traffic notices](docs/notify-stale.md) — `notify-stale` on a
   schedule, covering stale traffic and stuck private mail; channel setup
   detail in the [notifier spec](docs/stale-notifier-spec.md).

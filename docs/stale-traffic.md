@@ -9,13 +9,16 @@ is three commands:
 ```bash
 python bpq_admin.py export-stale mynode.example.com --user N0CALL --days 60
 python extract_emails.py stale-20260831-081810           # emails.txt + letters/
-# ... send the emails, print and mail the letters ...
+python deliver_emails.py stale-20260831-081810           # drafts in your mailbox (--send to send)
+# ... print and mail the letters ...
 python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
     --dir stale-20260831-081810
 ```
 
-The middle step is `extract_emails.py`, documented on its own page:
-[Recovering email addresses](extract-emails.md). Before killing the
+The middle steps are `extract_emails.py`, documented on its own page:
+[Recovering email addresses](extract-emails.md), and `deliver_emails.py`,
+which puts the emails it produced into your mailbox through Proton Mail
+Bridge: [Delivering the emails](deliver-emails.md). Before killing the
 exported messages, run [`list-hxc`](list-hxc.md) on the folder to catch
 the radiograms whose originators asked for a delivery confirmation. For
 unattended monitoring *between* delivery passes, see
@@ -51,7 +54,7 @@ date, so export more often than yearly.
 ## `kill-exported`
 
 The last step of the workflow: once an export folder's messages have been
-delivered (emailed via `emails.txt`, letters printed and mailed), remove
+delivered (emailed with `deliver_emails.py`, letters printed and mailed), remove
 them from the BBS. The folder itself is the kill list — every
 `msg_<id>.txt` in it names one message to kill:
 
@@ -66,7 +69,7 @@ python bpq_admin.py kill-exported mynode.example.com --user N0CALL \
 
 | Argument | Default | Description |
 |---|---|---|
-| `--dir DIR` | required | Export folder whose `msg_<id>.txt` files name the messages to kill. Other files in the folder (`index.txt`, `emails.txt`, `letters/`) are ignored. |
+| `--dir DIR` | required | Export folder whose `msg_<id>.txt` files name the messages to kill. Other files in the folder (`index.txt`, `emails.txt`, `delivered.txt`, `letters/`) are ignored. |
 | `--dry-run` | off | Print the message IDs that would be killed and exit — without connecting to the node at all. |
 
 Every kill is verified against the BBS reply, exactly like

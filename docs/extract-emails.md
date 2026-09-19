@@ -73,6 +73,13 @@ When the traffic and QRZ disagree (`DIFFERS`), the To line carries both
 addresses. The file is rewritten on every run, and the export folder is
 gitignored, so the generated emails stay out of the public repo.
 
+You don't have to copy these anywhere by hand:
+[`deliver_emails.py`](deliver-emails.md) reads `emails.txt` and creates
+each block as a draft in your mailbox (or sends it) through Proton Mail
+Bridge. It delivers the file as it is on disk, so settle any `DIFFERS` row
+by editing its To line first — and remember that re-running
+`extract_emails.py` rewrites the file.
+
 **Printable letters for everyone else.** Messages with no address at all
 (no email in the traffic, none on QRZ) each get their own file —
 `letters/letter_<id>.txt` in the export folder — formatted like the

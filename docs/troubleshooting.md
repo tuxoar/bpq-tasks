@@ -28,6 +28,14 @@ with `--no-qrz`. Addresses are transcribed by hand through several relays,
 so the traffic itself can carry a typo — a `DIFFERS` row is exactly that
 case, and QRZ is usually, though not always, the better source.
 
+**`deliver_emails.py` can't connect, or the login is refused.** Bridge has
+to be running, on the ports it reports (`info` in the Bridge console, or
+its Mailbox configuration page), and the password is the *Bridge-generated*
+one, not your Proton password. `python deliver_emails.py --test` checks
+both logins without touching a message; the
+[delivery page](deliver-emails.md#troubleshooting) covers certificate and
+security-mode errors.
+
 Still stuck? [Logging](logging.md) explains what each script records and
 where; `--verbose` on any `bpq_admin.py` action dumps the full session
 transcript to stderr.

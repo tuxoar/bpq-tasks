@@ -54,6 +54,21 @@ ADDED (6) - address recovered from QRZ - not present in the traffic
 Use `-q` to log without printing, for scheduled runs. The log holds real
 names and addresses; see the note below.
 
+## `deliver_emails.py`
+
+Same shape: each real run appends its report to `deliver_emails.log`
+under a header recording the time, the source file, the mode (`drafts` or
+`send`), the servers and how their certificates were checked, and the
+account (username only — the password is never written). A `--dry-run`
+prints its report but writes nothing, the log included.
+The table is one row per message with its To line, the action taken and
+the outcome (`DRAFTED`, `SENT`, `SKIPPED (…)`, `FAILED: <server reply>`),
+then the counts and the rows needing attention — see
+[Delivering the emails](deliver-emails.md#what-a-run-looks-like). The
+delivery *ledger* (`delivered.txt` in the export folder) is separate from
+the log: the log is history, the ledger is what stops a re-run from
+creating a message twice.
+
 Logs and exported messages contain real callsigns, hostnames, and message
 content — the repo's `.gitignore` keeps them out of version control.
 Leave it that way if you fork this publicly.
@@ -65,9 +80,13 @@ Leave it that way if you fork this publicly.
   redirects cleanly. `extract_emails.py` follows the same split: the report
   on stdout, per-callsign QRZ warnings on stderr.
 - Exit code `0` on success, `1` on any failure (connection refused, login
-  rejected, expected prompt never seen, an unconfirmed kill, or a rejected
-  QRZ login), `2` for invalid arguments. Failure messages include the text
-  the node or QRZ actually sent.
+  rejected, expected prompt never seen, an unconfirmed kill, a rejected
+  QRZ login, or — for `deliver_emails.py` — an `emails.txt` that does not
+  parse or any message that failed to draft or send), `2` for invalid
+  arguments. Failure messages include the text the node, QRZ, or the mail
+  server actually sent.
+- `deliver_emails.py` treats messages skipped because the ledger already
+  records them as success, not failure.
 - A QRZ lookup that fails for one callsign warns and leaves that row's
   `FROM QRZ` empty rather than aborting the run, so one bad record cannot
   cost you the whole report.

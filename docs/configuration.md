@@ -36,18 +36,19 @@ Command-line values always override the environment. The password
 resolution order is: `--password` (least safe), then `BPQ_PASSWORD`, then
 an interactive prompt with hidden input (safest).
 
-The [`notify-stale`](notify-stale.md) channels and the
+The [`notify-stale`](notify-stale.md) channels, the
 [QRZ credentials](extract-emails.md#qrz-credentials-and-limits) for
-`extract_emails.py` follow the same pattern; their variables are listed on
-those pages.
+`extract_emails.py`, and the [mailbox settings](deliver-emails.md#environment)
+for `deliver_emails.py` follow the same pattern; their variables are listed
+on those pages.
 
 ## Recommended: a sourced env file
 
 Typing `export BPQ_PASSWORD=...` at the prompt still lands in shell
 history. Instead, put the exports in a file the shell reads, and lock it
 down. The repo ships [`bpq.env.sample`](../bpq.env.sample) with every
-variable both scripts understand — connection, QRZ, and the
-`notify-stale` channels — ready to copy:
+variable the scripts understand — connection, QRZ, the `notify-stale`
+channels, and the Proton Mail Bridge account — ready to copy:
 
 ```bash
 # Linux / macOS - once:
