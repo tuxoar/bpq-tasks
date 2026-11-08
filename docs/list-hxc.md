@@ -10,8 +10,9 @@ letter), those originators are still owed a service message.
 `list-hxc` scans the `msg_<id>.txt` files in an export directory for
 preambles whose HX group contains `C` — plain `HXC`, combined codes like
 `HXCG` or `HXCF30`, and separately written groups like `HXC HXG` are all
-recognized — and writes the radiogram numbers, grouped by originating
-station, to a text file. It never connects to the node: only the export
+recognized, with or without a leading `SVC` service-message marker —
+and writes the radiogram numbers, grouped by originating station, to a
+text file. It never connects to the node: only the export
 directory is read, and each originator's name, address, and email are
 looked up on the QRZ.com XML API (the same credentials and client as
 [`extract_emails.py`](extract-emails.md); `--no-qrz` skips the lookups).

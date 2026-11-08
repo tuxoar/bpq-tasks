@@ -114,11 +114,12 @@ PRIVATE_LINE_RE = re.compile(r"^\s*(\d+)\s+\d{1,2}-[A-Za-z]{3}\s+P\S\s")
 # exported message body:
 #   3962 R HXC W2PAX ARL 24 NAPLES FL AUG 29
 #   363 R HXC WX2DX 10 STORMSTOWN PA 0152Z AUG 12
-# number, precedence, the HX group(s) - codes A-G, combined as in HXCG
-# or written separately as in "HXC HXG", an HXA/HXB figure allowed -
-# then the station of origin.
+#   SVC 5031 R HXC WA4VGZ 12 NASHVILLE TN NOV 2
+# an optional SVC marker (a service message), number, precedence, the
+# HX group(s) - codes A-G, combined as in HXCG or written separately as
+# in "HXC HXG", an HXA/HXB figure allowed - then the station of origin.
 HX_PREAMBLE_RE = re.compile(
-    r"^\s*(\d+)\s+(?:TEST\s+)?(?:EMERGENCY|[RPW])\s+"
+    r"^\s*(?:SVC\s+)?(\d+)\s+(?:TEST\s+)?(?:EMERGENCY|[RPW])\s+"
     r"(HX[A-G]+\d*(?:\s+HX[A-G]+\d*)*)\s+"
     r"([A-Z0-9]+(?:/[A-Z0-9]+)*)\b[^\n]*",
     re.IGNORECASE | re.MULTILINE)
